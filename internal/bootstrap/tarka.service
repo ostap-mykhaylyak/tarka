@@ -1,0 +1,49 @@
+# tarka - authoritative DNS server
+#
+# Runs as root: it binds :53 (udp+tcp). The hardening below still
+# confines it. To drop privileges instead, set User=tarka, add
+# AmbientCapabilities=CAP_NET_BIND_SERVICE and chown /var/log/tarka.
+
+[Unit]
+Description=tarka - authoritative DNS server
+Documentation=https://github.com/ostap-mykhaylyak/tarka
+After=network-online.target
+Wants=network-online.target
+# Stop hammering if startup keeps failing (e.g. port 53 already in
+# use by a local resolver): after 5 failures within 60s systemd gives
+# up and the unit stays failed, so the problem is visible instead of
+# an endless restart loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/sbin/tarka --config /etc/tarka/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+LimitNOFILE=65536
+
+RuntimeDirectory=tarka
+RuntimeDirectoryMode=0750
+
+# Hardening
+ProtectSystem=strict
+# LogDir also holds runtime state: persisted serials and the
+# transferred secondary zones.
+ReadWritePaths=/var/log/tarka
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

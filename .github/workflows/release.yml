@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o tarka ./cmd/tarka
+      - name: package
+        run: |
+          BUNDLE=tarka-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}
+          mkdir "$BUNDLE"
+          # The binary self-provisions on first run: the bundle only
+          # ships binary + unit + docs.
+          cp tarka internal/bootstrap/tarka.service README.md LICENSE "$BUNDLE"/
+          tar -czf "$BUNDLE.tar.gz" "$BUNDLE"
+          sha256sum "$BUNDLE.tar.gz" > "$BUNDLE.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            tarka-*.tar.gz
+            tarka-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # A single release job creates the GitHub release once, after both
+  # builds finish — avoids the race where two matrix jobs try to create
+  # the same release concurrently.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/tarka-*.tar.gz
+            dist/tarka-*.tar.gz.sha256

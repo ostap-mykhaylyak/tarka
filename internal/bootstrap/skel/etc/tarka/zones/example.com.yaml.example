@@ -1,0 +1,50 @@
+# tarka zone file - one YAML file per zone under /etc/tarka/zones/.
+#
+# Rename to <zone>.yaml to activate. Files are hot-reloaded: an
+# invalid file is skipped with a warning and its last good version
+# stays loaded.
+
+zone: example.com
+type: primary            # primary | secondary
+
+soa:
+  mname: ns1.example.com.        # primary nameserver
+  rname: hostmaster.example.com. # zone contact (first dot stands for @)
+  # serial is MANAGED BY TARKA: bumped automatically on every change
+  # to this file and persisted across restarts. Do not set it here.
+  refresh: 4h
+  retry: 15m
+  expire: 7d
+  minimum: 1h            # negative-answer TTL
+
+ttl: 1h                  # default TTL for records without their own
+
+records:
+  - {name: "@",   type: NS,   value: ns1.example.com.}
+  - {name: ns1,   type: A,    value: 203.0.113.10}
+  - {name: "@",   type: A,    value: 203.0.113.10}
+  - {name: "@",   type: AAAA, value: 2001:db8::10}
+  - {name: www,   type: A,    value: 203.0.113.10}
+  - {name: "@",   type: MX,   value: mail.example.com., prio: 10}
+  - {name: "@",   type: TXT,  value: "v=spf1 mx -all"}
+  - {name: "*",   type: A,    value: 203.0.113.10, ttl: 5m}
+  # GeoDNS (requires geoip.enabled in config.yaml): a record tagged
+  # with 2-letter country (IT, FR) or continent (EU, NA, AS, AF, SA,
+  # OC, AN) codes answers only matching clients; untagged records are
+  # the fallback for everyone else. EDNS Client Subnet is honored.
+  #- {name: www,  type: A,    value: 198.51.100.10, geo: [EU]}
+  #- {name: www,  type: A,    value: 192.0.2.10,    geo: [US, CA]}
+
+# Zone transfers (type: primary only): serve AXFR to authorized
+# secondaries and send NOTIFY when the zone changes. Quote IPv6
+# addresses ("2001:db8::53"): YAML needs it. Targets take an optional
+# :port (default 53).
+#transfer:
+#  allow: [198.51.100.53]    # IPs/CIDRs allowed to AXFR this zone
+#  notify: [198.51.100.53]   # NOTIFY targets on zone change
+
+# Secondary mode (type: secondary): pull the zone from the primaries
+# via AXFR; refresh/retry/expire timers come from the transferred SOA
+# and the zone body above (soa/records) is ignored. The transferred
+# copy is persisted under /var/log/tarka/secondary/.
+#primaries: [203.0.113.53]

@@ -1,0 +1,16 @@
+# Rotation policy for tarka. The daemon has no rotation logic: on
+# SIGHUP (systemctl reload) it reopens every *.log file. Runtime state
+# (serials.json, secondary/) is excluded by the glob.
+/var/log/tarka/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    sharedscripts
+    postrotate
+        systemctl reload tarka.service >/dev/null 2>&1 || true
+    endscript
+}

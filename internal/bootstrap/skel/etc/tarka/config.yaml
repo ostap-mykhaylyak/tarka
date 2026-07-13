@@ -1,0 +1,63 @@
+# tarka - authoritative DNS server, global configuration.
+#
+# Read at startup and hot-reloaded on change; never rewritten by the
+# daemon. Every field has a production default: a sparse (or empty)
+# file is fine. Zones are NOT defined here: one YAML file per zone
+# lives under /etc/tarka/zones/ (see example.com.yaml.example).
+
+server:
+  # Addresses to listen on: each one gets a UDP and a TCP listener.
+  # ":53" is the dual-stack wildcard (IPv4 + IPv6). Bind specific IPs
+  # when :53 is shared with a local resolver (e.g. systemd-resolved on
+  # 127.0.0.53): ["203.0.113.10:53", "[2001:db8::10]:53"].
+  # Changing this requires a restart (listeners are bound at startup).
+  listen: [":53"]
+
+  # EDNS0 UDP payload size advertised to clients (RFC 6891). Answers
+  # larger than the negotiated limit are truncated (TC bit) and the
+  # client retries over TCP. 1232 is the DNS-flag-day-2020 safe value.
+  udp_payload_size: 1232
+
+  # Read/write timeout for TCP connections (queries and zone
+  # transfers). Changing this requires a restart. e.g. "10s"
+  tcp_timeout: 10s
+
+zones:
+  # Directory with one YAML file per zone (hot-reloaded; an invalid
+  # file is skipped with a warning and its last good version stays
+  # loaded).
+  dir: /etc/tarka/zones
+
+geoip:
+  # MaxMind GeoLite2 country database, used by the geo: field of zone
+  # records (GeoDNS). Install geoipupdate to keep it fresh; tarka
+  # hot-swaps the file when it changes. A missing database is not
+  # fatal: geo records simply never match and the defaults answer.
+  enabled: false
+  country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
+
+acme:
+  # Built-in ACME client: tarka obtains AND renews the certificates
+  # below on its own, answering the DNS-01 challenges itself (it is
+  # the authoritative server). Wildcards included, no certbot needed.
+  # Certificates land in <cert_dir>/live/<name>/fullchain.pem +
+  # privkey.pem (certbot-style layout): point the reverse proxy there.
+  # Enabling requires a restart.
+  enabled: false
+  email: ""                  # required: CA account contact
+  # letsencrypt | letsencrypt-staging | zerossl | any directory URL.
+  # Test with letsencrypt-staging first: production has rate limits.
+  directory: letsencrypt
+  # ZeroSSL (and some other CAs) require EAB credentials from their
+  # dashboard:
+  #eab: {kid: "", hmac: ""}
+  cert_dir: /var/log/tarka/certs
+  renew_before: 30d          # renew when less than this remains
+  propagation_wait: 30s      # pause before the CA validates (lets
+                             # NOTIFY reach the secondaries)
+  certificates: []
+  # e.g.:
+  #certificates:
+  #  - domains: [example.com, "*.example.com"]
+  #  - name: shop            # live/shop/; default is the first domain
+  #    domains: [shop.example.net]
