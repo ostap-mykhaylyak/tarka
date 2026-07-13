@@ -59,6 +59,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          name: ${{ github.ref_name }}
           files: |
             dist/tarka-*.tar.gz
             dist/tarka-*.tar.gz.sha256
