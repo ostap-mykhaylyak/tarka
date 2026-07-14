@@ -62,6 +62,118 @@ Copy `/etc/tarka/zones/example.com.yaml.example` to
 is bumped automatically and NOTIFY goes out to the configured
 secondaries.
 
+## Primary + secondary setup (master/slave)
+
+Scenario: `ns1.example.com` (198.51.100.1) is the primary,
+`ns2.example.com` (203.0.113.2) a secondary. Zone: `example.com`.
+Everything is plain AXFR/NOTIFY, so the secondary can also be a
+registrar's slave service or any other DNS server — and vice versa.
+
+### 1. Install tarka on both machines
+
+Same steps on each ([Install](#install)): unpack, `sudo ./tarka
+--init`, `systemctl enable --now tarka`. Open **53/udp and 53/tcp**
+inbound on both (the secondary reaches the primary's 53/tcp for the
+transfers). If systemd-resolved or another resolver sits on port 53,
+bind the public IPs explicitly in `/etc/tarka/config.yaml`
+(`server.listen`, restart required).
+
+### 2. On the PRIMARY — the full zone file
+
+`/etc/tarka/zones/example.com.yaml`:
+
+```yaml
+zone: example.com
+type: primary
+
+soa:
+  mname: ns1.example.com.
+  rname: hostmaster.example.com.
+  # no serial: tarka manages it
+
+records:
+  # the NS set: list EVERY nameserver, secondaries included
+  - {name: "@",  type: NS, value: ns1.example.com.}
+  - {name: "@",  type: NS, value: ns2.example.com.}
+  # glue for the in-zone nameserver names
+  - {name: ns1,  type: A,  value: 198.51.100.1}
+  - {name: ns2,  type: A,  value: 203.0.113.2}
+  # ... the actual zone content
+  - {name: "@",  type: A,  value: 198.51.100.10}
+  - {name: www,  type: A,  value: 198.51.100.10}
+
+transfer:
+  allow:  [203.0.113.2]   # who may AXFR this zone
+  notify: [203.0.113.2]   # who gets NOTIFY on every change
+```
+
+No restart needed: the file is hot-loaded on save.
+
+### 3. On the SECONDARY — a three-line zone file
+
+`/etc/tarka/zones/example.com.yaml`:
+
+```yaml
+zone: example.com
+type: secondary
+primaries: [198.51.100.1]
+```
+
+The zone body lives only on the primary. On save, the secondary
+transfers immediately (and re-checks at the SOA `refresh` interval, on
+every NOTIFY, and after the `retry`/`expire` timers on failures). The
+transferred copy is persisted under `/var/log/tarka/secondary/`, so a
+reboot serves instantly even if the primary is down.
+
+### 4. Verify
+
+```sh
+# same serial on both?
+dig +short SOA example.com @198.51.100.1
+dig +short SOA example.com @203.0.113.2
+
+# on each machine:
+tarka --status        # primary: "zone example.com. primary serial N"
+                      # secondary: "zone example.com. secondary serial N"
+```
+
+Transfers and NOTIFY are logged in `/var/log/tarka/xfr.log` on both
+sides. Then edit the zone on the primary and watch the serial follow
+on the secondary within seconds.
+
+### 5. At the registrar
+
+Point the domain's NS records at ALL the nameservers (`ns1` and
+`ns2`), and register the glue/host records for the in-zone names
+(`ns1.example.com → 198.51.100.1`, `ns2.example.com → 203.0.113.2`).
+
+### 6. Adding another secondary (ns3, 192.0.2.3)
+
+1. On **ns3**: install tarka, drop the same three-line secondary file
+   (with `primaries: [198.51.100.1]`).
+2. On the **primary**: add `192.0.2.3` to `transfer.allow` and
+   `transfer.notify`, and add the NS + glue records
+   (`{name: "@", type: NS, value: ns3.example.com.}`,
+   `{name: ns3, type: A, value: 192.0.2.3}`). Save — hot-reloaded,
+   serial bumps, everyone gets NOTIFY.
+3. At the registrar: add the `ns3` NS/host record.
+
+The same works in reverse: a tarka instance can be the secondary of a
+foreign primary (BIND, PowerDNS, a registrar's master) — only the
+three-line file is needed.
+
+### Notes
+
+- Edit zones **only on the primary**; on the secondaries the YAML file
+  is just the subscription, its content is ignored beyond
+  `zone`/`type`/`primaries`.
+- Enable ACME **on the primary only**: the challenge TXT records flow
+  to the secondaries via the normal transfer (serial bump + NOTIFY),
+  so the CA validates against any of the NS. The certificates are
+  written on the primary.
+- Each zone is independent: one machine can be primary for some zones
+  and secondary for others, one YAML per zone.
+
 ## Certificates (ACME DNS-01, fully automatic)
 
 tarka is authoritative for your zones, so it can prove domain
