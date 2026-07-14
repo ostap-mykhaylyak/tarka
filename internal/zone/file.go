@@ -47,6 +47,7 @@ type record struct {
 	TTL   config.Duration `yaml:"ttl"`
 	Prio  *uint16         `yaml:"prio"`
 	Geo   []string        `yaml:"geo"`
+	View  []string        `yaml:"view"`
 }
 
 // zoneDefaults returns the fileZone production defaults applied under
@@ -131,7 +132,7 @@ func Build(data []byte, file string, serialFor func(zoneName string) uint32) (*Z
 	}
 
 	z.names = map[string]map[uint16][]rrEntry{}
-	z.add(z.soa, nil)
+	z.add(z.soa, nil, nil)
 
 	for i, rec := range fz.Records {
 		// ALIAS/ANAME is tarka-specific, not a wire type: record the
@@ -156,10 +157,14 @@ func Build(data []byte, file string, serialFor func(zoneName string) uint32) (*Z
 			warnings = append(warnings, fmt.Sprintf("records[%d]: skipping: %v", i, err))
 			continue
 		}
+		view := normalizeView(rec.View)
 		if len(geo) > 0 {
 			z.hasGeo = true
 		}
-		z.add(rr, geo)
+		if len(view) > 0 {
+			z.hasView = true
+		}
+		z.add(rr, geo, view)
 	}
 
 	if len(z.names[apex][dns.TypeNS]) == 0 {
@@ -233,6 +238,19 @@ func buildRR(rec record, apex string, defTTL uint32) (dns.RR, error) {
 	return rr, nil
 }
 
+// normalizeView lowercases and trims the view tags of a record and
+// drops empties. View names are free-form (matched against the
+// providers in views.yaml), so there is nothing to validate here.
+func normalizeView(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if v := strings.ToLower(strings.TrimSpace(tag)); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // normalizeGeo validates and uppercases the geo tags of a record.
 func normalizeGeo(tags []string) ([]string, error) {
 	out := make([]string, 0, len(tags))
@@ -246,14 +264,15 @@ func normalizeGeo(tags []string) ([]string, error) {
 	return out, nil
 }
 
-// add indexes one RR under its owner and type.
-func (z *Zone) add(rr dns.RR, geo []string) {
+// add indexes one RR under its owner and type, with optional geo and
+// view tags.
+func (z *Zone) add(rr dns.RR, geo, view []string) {
 	name := rr.Header().Name
 	if z.names[name] == nil {
 		z.names[name] = map[uint16][]rrEntry{}
 	}
 	t := rr.Header().Rrtype
-	z.names[name][t] = append(z.names[name][t], rrEntry{rr: rr, geo: geo})
+	z.names[name][t] = append(z.names[name][t], rrEntry{rr: rr, geo: geo, view: view})
 }
 
 // addAlias records an ALIAS target and makes the owner an existing

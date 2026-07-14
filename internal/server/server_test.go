@@ -50,12 +50,18 @@ func startServerListen(t *testing.T, zoneYAML, listen string) (udpAddr, tcpAddr 
 
 func startServerFull(t *testing.T, zoneYAML string, geo GeoResolver, listen string) (udpAddr, tcpAddr string, s *Server) {
 	t.Helper()
-	return startServerIdentity(t, zoneYAML, geo, listen, "")
+	return startServerOpts(t, zoneYAML, geo, nil, listen, "")
 }
 
-// startServerIdentity bakes an NSID identity into the config (set
-// before Start, so the server is never mutated while it serves).
 func startServerIdentity(t *testing.T, zoneYAML string, geo GeoResolver, listen, identity string) (udpAddr, tcpAddr string, s *Server) {
+	t.Helper()
+	return startServerOpts(t, zoneYAML, geo, nil, listen, identity)
+}
+
+// startServerOpts wires geo/view resolvers and NSID identity BEFORE
+// Start, so the running server is never mutated while it serves
+// (which would race under -race).
+func startServerOpts(t *testing.T, zoneYAML string, geo GeoResolver, vr ViewResolver, listen, identity string) (udpAddr, tcpAddr string, s *Server) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -83,6 +89,9 @@ func startServerIdentity(t *testing.T, zoneYAML string, geo GeoResolver, listen,
 	zones.LoadAll()
 
 	s = New(mgr, zones, geo, metrics.New(), discard(), discard(), discard())
+	if vr != nil {
+		s.SetViewResolver(vr)
+	}
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}

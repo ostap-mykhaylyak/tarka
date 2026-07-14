@@ -112,17 +112,17 @@ func (s *Store) buildCatalogLocked(members []string) *Zone {
 		Serial:  serial,
 		Refresh: 3600, Retry: 600, Expire: 2592000, Minttl: 60,
 	}
-	z.add(z.soa, nil)
+	z.add(z.soa, nil, nil)
 	// RFC 9432: a catalog zone has an NS record pointing at
 	// "invalid." and a version TXT of "2".
 	z.add(&dns.NS{
 		Hdr: dns.RR_Header{Name: cat.apex, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 60},
 		Ns:  "invalid.",
-	}, nil)
+	}, nil, nil)
 	z.add(&dns.TXT{
 		Hdr: dns.RR_Header{Name: "version." + cat.apex, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60},
 		Txt: []string{"2"},
-	}, nil)
+	}, nil, nil)
 	for _, member := range members {
 		sum := sha1.Sum([]byte(member))
 		z.add(&dns.PTR{
@@ -131,7 +131,7 @@ func (s *Store) buildCatalogLocked(members []string) *Zone {
 				Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 60,
 			},
 			Ptr: member,
-		}, nil)
+		}, nil, nil)
 	}
 	z.indexNonTerminals()
 	z.loaded = true

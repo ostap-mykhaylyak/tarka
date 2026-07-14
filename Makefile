@@ -43,6 +43,7 @@ install: static dirs
 	install -m 0755 bin/$(APP) $(SBIN_DIR)/$(APP)
 	test -f $(CONF_DIR)/config.yaml || install -m 0640 -o root -g $(APP_GRP) internal/bootstrap/skel/etc/$(APP)/config.yaml $(CONF_DIR)/config.yaml
 	test -f $(CONF_DIR)/zones/example.com.yaml.example || install -m 0640 -o root -g $(APP_GRP) internal/bootstrap/skel/etc/$(APP)/zones/example.com.yaml.example $(CONF_DIR)/zones/example.com.yaml.example
+	test -f $(CONF_DIR)/views.yaml.example || install -m 0640 -o root -g $(APP_GRP) internal/bootstrap/skel/etc/$(APP)/views.yaml.example $(CONF_DIR)/views.yaml.example
 	install -m 0644 internal/bootstrap/$(APP).service $(UNIT_DIR)/$(APP).service
 	install -m 0644 internal/bootstrap/skel/etc/logrotate.d/$(APP) /etc/logrotate.d/$(APP)
 	@echo ""

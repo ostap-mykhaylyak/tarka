@@ -1,0 +1,31 @@
+# tarka views — resolver-IP → provider map for the `view:` record tag.
+#
+# Rename to views.yaml to activate. Hot-reloaded on save. Each key is
+# a provider name (matched case-insensitively against a record's
+# view: tag); each value is the list of that provider's RECURSIVE
+# RESOLVER IP ranges (CIDR or bare IP). A query whose SOURCE address
+# (the resolver, NOT the end user) falls in one of these ranges gets
+# the records tagged with that provider.
+#
+# A record answers a client that matches ANY of its geo OR view tags;
+# with no tagged match, the untagged default records answer. So this
+# is complementary to GeoDNS: set geo: for ECS-capable resolvers and
+# view: for the rest, and either one hitting is enough.
+#
+#   www  A 203.0.113.10                      # default, everyone else
+#   www  A 198.51.100.10  view: [Fastweb]    # Fastweb resolvers
+#   www  A 192.0.2.10     view: [TIM, Wind]  # TIM or Wind resolvers
+#
+# IMPORTANT: the ranges below are PLACEHOLDERS — replace them with the
+# real resolver ranges of each provider. Source them from the
+# provider's autonomous systems (e.g. bgp.he.net / RIPE: search the
+# ASN, take the announced prefixes that host the resolvers). Wrong
+# ranges mean wrong answers, so verify before enabling.
+
+# Fastweb:
+#   - 85.18.0.0/16
+#   - 93.63.0.0/16
+# TIM:
+#   - 212.216.0.0/16
+# Wind:
+#   - 212.245.0.0/16

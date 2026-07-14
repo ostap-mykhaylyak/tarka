@@ -26,6 +26,10 @@ answered with REFUSED.
 - GeoDNS: tag records with `geo: [IT, EU, ...]` (MaxMind
   GeoLite2-Country, hot-swapped) and clients get the nearest variant;
   EDNS Client Subnet is honored and echoed (RFC 7871)
+- Resolver views: tag records with `view: [Fastweb, TIM, ...]` and a
+  query gets those records when its resolver's IP is in that
+  provider's ranges (`/etc/tarka/views.yaml`) — a resolver-IP split
+  that needs no ECS. A record answers on geo OR view match
 - ALIAS/ANAME at the apex: point `@` at an external hostname; tarka
   resolves it and serves the flattened A/AAAA, refreshed in the
   background and re-transferred to the secondaries on change
@@ -252,7 +256,34 @@ acme:
   directory: letsencrypt        # or letsencrypt-staging / zerossl / URL
 ```
 
-Add a zone file, get a certificate. Before contacting the CA, tarka
+## Resolver views (split answers by provider)
+
+When you want different records depending on which resolver a client
+uses — Fastweb users here, TIM users there — tag the records with
+`view:` and map each provider's resolver IP ranges in
+`/etc/tarka/views.yaml`:
+
+```yaml
+# /etc/tarka/views.yaml
+Fastweb: [85.18.0.0/16, 93.63.0.0/16]
+TIM:     [212.216.0.0/16]
+```
+
+```yaml
+# in the zone
+- {name: www, type: A, value: 203.0.113.10}                 # everyone else
+- {name: www, type: A, value: 198.51.100.10, view: [Fastweb]}
+- {name: www, type: A, value: 192.0.2.10,    view: [TIM]}
+```
+
+This keys on the resolver's source IP, so it works without ECS
+(unlike GeoDNS, which locates the end user). The two combine as OR:
+a record answers if the client matches its `geo:` **or** its `view:`
+tag — so you can set `geo:` for ECS-capable resolvers and `view:` as
+the fallback for the rest. The file is hot-reloaded; unknown
+resolvers fall back to the untagged default records.
+
+## Certificates (ACME DNS-01, fully automatic)
 publishes a probe TXT in the zone and checks through public resolvers
 (1.1.1.1 / 8.8.8.8) that the delegation actually reaches the server —
 zones not (yet) pointed here are silently skipped, so parked zones

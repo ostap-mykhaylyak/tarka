@@ -19,19 +19,23 @@ import (
 // spin the handler.
 const maxCNAMEChain = 8
 
-// ClientGeo is the resolved location of the querying client (empty
-// fields = unknown), used by geo-tagged records.
+// ClientGeo is the resolved matching context of the querying client
+// (empty fields = unknown): its geo location, for geo-tagged records,
+// and the provider views its resolver IP belongs to, for view-tagged
+// records.
 type ClientGeo struct {
-	Country   string // ISO 3166-1 alpha-2, e.g. "IT"
-	Continent string // two-letter code, e.g. "EU"
+	Country   string   // ISO 3166-1 alpha-2, e.g. "IT"
+	Continent string   // two-letter code, e.g. "EU"
+	Views     []string // lowercase provider names (resolver-IP views)
 }
 
-// rrEntry pairs one record with its optional geo tags. Untagged
-// entries are the defaults; tagged entries answer only matching
-// clients.
+// rrEntry pairs one record with its optional geo and view tags.
+// Untagged entries are the defaults; a tagged entry answers a client
+// that matches ANY of its tags (geo OR view).
 type rrEntry struct {
-	rr  dns.RR
-	geo []string // uppercase ISO countries or continent codes
+	rr   dns.RR
+	geo  []string // uppercase ISO countries or continent codes
+	view []string // lowercase provider view names
 }
 
 // Zone is one loaded zone: immutable after build, safe for concurrent
@@ -62,6 +66,7 @@ type Zone struct {
 	// A/AAAA the alias manager materializes into the zone.
 	aliasTargets map[string]string
 	hasGeo       bool
+	hasView      bool
 	loaded       bool // false for a secondary zone not yet transferred
 	// synthetic marks zones tarka generates itself (the catalog):
 	// excluded from the ACME candidates.
@@ -82,6 +87,10 @@ func (z *Zone) Loaded() bool { return z.loaded }
 // HasGeo reports whether any record carries geo tags, so the server
 // only pays for a GeoIP lookup when it can matter.
 func (z *Zone) HasGeo() bool { return z.hasGeo }
+
+// HasView reports whether any record carries view tags, so the server
+// only pays for a resolver-IP view lookup when it can matter.
+func (z *Zone) HasView() bool { return z.hasView }
 
 // AliasTargets returns a copy of the owner->target ALIAS map (empty
 // when the zone has none). The alias manager resolves the targets.
@@ -180,7 +189,7 @@ func (z *Zone) WithData(rrs []dns.RR) (*Zone, error) {
 			nz.soa = soa
 			nz.Serial = soa.Serial
 		}
-		nz.add(rr, nil)
+		nz.add(rr, nil, nil)
 	}
 	if nz.soa == nil {
 		return nil, fmt.Errorf("transferred zone %s has no SOA", nz.Name)
@@ -196,6 +205,7 @@ func (z *Zone) WithData(rrs []dns.RR) (*Zone, error) {
 func (z *Zone) WithOverlay(serial uint32, extra []dns.RR) *Zone {
 	nz := z.cloneMeta()
 	nz.hasGeo = z.hasGeo
+	nz.hasView = z.hasView
 	nz.Serial = serial
 	for name, types := range z.names {
 		m := make(map[uint16][]rrEntry, len(types))
@@ -210,7 +220,7 @@ func (z *Zone) WithOverlay(serial uint32, extra []dns.RR) *Zone {
 	nz.names[nz.Name][dns.TypeSOA] = []rrEntry{{rr: soa}}
 	for _, rr := range extra {
 		rr.Header().Name = strings.ToLower(rr.Header().Name)
-		nz.add(rr, nil)
+		nz.add(rr, nil, nil)
 	}
 	nz.indexNonTerminals()
 	nz.loaded = true
@@ -342,27 +352,43 @@ func (z *Zone) resolve(qname string, qtype uint16, g ClientGeo, depth int, res *
 	res.Ns = append(res.Ns, z.negativeSOA())
 }
 
-// pick applies the geo selection to one RRset: tagged entries
-// matching the client win; with no match, the untagged defaults
-// answer. All-tagged sets with no match yield nothing (NODATA).
-func pick(entries []rrEntry, g ClientGeo) []dns.RR {
+// pick applies the geo/view selection to one RRset: an entry tagged
+// with geo and/or view answers when the client matches ANY of its
+// tags (geo OR view); with no tagged match, the untagged defaults
+// answer. An all-tagged set with no match yields nothing (NODATA).
+func pick(entries []rrEntry, c ClientGeo) []dns.RR {
 	var matched, def []dns.RR
 	for _, e := range entries {
-		if len(e.geo) == 0 {
+		if len(e.geo) == 0 && len(e.view) == 0 {
 			def = append(def, e.rr)
 			continue
 		}
-		for _, tag := range e.geo {
-			if (g.Country != "" && tag == g.Country) || (g.Continent != "" && tag == g.Continent) {
-				matched = append(matched, e.rr)
-				break
-			}
+		if matchTags(e, c) {
+			matched = append(matched, e.rr)
 		}
 	}
 	if len(matched) > 0 {
 		return matched
 	}
 	return def
+}
+
+// matchTags reports whether an entry's geo or view tags match the
+// client (OR across both dimensions).
+func matchTags(e rrEntry, c ClientGeo) bool {
+	for _, tag := range e.geo {
+		if (c.Country != "" && tag == c.Country) || (c.Continent != "" && tag == c.Continent) {
+			return true
+		}
+	}
+	for _, want := range e.view {
+		for _, have := range c.Views {
+			if want == have {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // raw strips the geo metadata (delegations and glue ignore it).

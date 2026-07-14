@@ -90,6 +90,11 @@ geoip:
   enabled: false
   country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
 
+# Resolver-IP views (the view: record tag) are configured in a
+# separate hot-reloaded file, /etc/tarka/views.yaml — a map of
+# provider name -> resolver IP ranges. See views.yaml.example. It
+# complements GeoDNS: a record answers on geo OR view match.
+
 acme:
   # Built-in ACME client, fully automatic: EVERY hosted primary zone
   # gets a certificate for <zone> + *.<zone>, obtained and renewed by

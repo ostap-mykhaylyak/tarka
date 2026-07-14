@@ -28,6 +28,7 @@ var UnitFile []byte
 // skel source paths inside the embedded FS.
 const (
 	skelConfig    = "skel/etc/tarka/config.yaml"
+	skelViews     = "skel/etc/tarka/views.yaml.example"
 	skelZonesDir  = "skel/etc/tarka/zones"
 	skelLogrotate = "skel/etc/logrotate.d/tarka"
 )
@@ -59,6 +60,10 @@ func EnsureLayout(out io.Writer) error {
 		if _, err := installIfMissing(skelZonesDir+"/"+e.Name(), dst, 0o640); err != nil {
 			return err
 		}
+	}
+	// Install the views example (resolver-IP provider table).
+	if _, err := installIfMissing(skelViews, paths.ViewsFile+".example", 0o640); err != nil {
+		return err
 	}
 	return nil
 }

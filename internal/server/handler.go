@@ -68,7 +68,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 				m.Authoritative = true
 				m.Answer = []dns.RR{rfc8482(qname)}
 			default:
-				res := z.LookupGeo(qname, qtype, s.clientGeo(w, r, z))
+				res := z.LookupGeo(qname, qtype, s.clientMatch(w, r, z))
 				m.SetReply(r)
 				m.Rcode = res.Rcode
 				m.Authoritative = res.Authoritative
@@ -170,22 +170,30 @@ func rfc8482(qname string) dns.RR {
 	}
 }
 
-// clientGeo resolves the querying client's location, but only when
-// the zone has geo-tagged records and a database is loaded. The EDNS
-// Client Subnet address, when present, wins over the connection
-// source: behind a public resolver it is the only truthful signal.
-func (s *Server) clientGeo(w dns.ResponseWriter, r *dns.Msg, z *zone.Zone) zone.ClientGeo {
-	if !z.HasGeo() || s.geo == nil || !s.geo.Loaded() {
-		return zone.ClientGeo{}
-	}
-	addr := remoteIP(w)
-	if ecs := findECS(r); ecs != nil {
-		if a, ok := netip.AddrFromSlice(ecs.Address); ok {
-			addr = a.Unmap()
+// clientMatch resolves the querying client's matching context: its
+// geo location (for geo-tagged records) and the provider views its
+// resolver belongs to (for view-tagged records). Each dimension is
+// computed only when the zone actually uses it. Geo prefers the EDNS
+// Client Subnet (the end user) when present; view always uses the
+// connection source — the resolver itself.
+func (s *Server) clientMatch(w dns.ResponseWriter, r *dns.Msg, z *zone.Zone) zone.ClientGeo {
+	var cm zone.ClientGeo
+	src := remoteIP(w)
+
+	if z.HasGeo() && s.geo != nil && s.geo.Loaded() {
+		addr := src
+		if ecs := findECS(r); ecs != nil {
+			if a, ok := netip.AddrFromSlice(ecs.Address); ok {
+				addr = a.Unmap()
+			}
 		}
+		g := s.geo.Lookup(addr)
+		cm.Country, cm.Continent = g.Country, g.Continent
 	}
-	g := s.geo.Lookup(addr)
-	return zone.ClientGeo{Country: g.Country, Continent: g.Continent}
+	if z.HasView() && s.views != nil && s.views.Loaded() {
+		cm.Views = s.views.Lookup(src)
+	}
+	return cm
 }
 
 // echoECS mirrors the client's ECS option in the response. The scope

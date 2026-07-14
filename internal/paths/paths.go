@@ -15,6 +15,10 @@ const (
 	// ZonesDir holds one YAML file per DNS zone.
 	ZonesDir = ConfigDir + "/zones"
 
+	// ViewsFile maps provider names to their resolver IP ranges, for
+	// the view: record tag (resolver-IP-based split answers).
+	ViewsFile = ConfigDir + "/views.yaml"
+
 	// LogDir holds all log files and runtime state. It is the only
 	// path the daemon is guaranteed to be able to write to.
 	LogDir = "/var/log/tarka"

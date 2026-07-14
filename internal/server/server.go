@@ -39,6 +39,14 @@ type GeoResolver interface {
 	Loaded() bool
 }
 
+// ViewResolver maps a resolver's IP to the provider views it belongs
+// to, for the view-tagged records. Implemented by internal/views;
+// nil (or not loaded) means view records never match.
+type ViewResolver interface {
+	Lookup(addr netip.Addr) []string
+	Loaded() bool
+}
+
 // Server owns the DNS listeners. Listen addresses, tcp_timeout, TSIG
 // and RRL are read at Start: changing them requires a restart.
 // udp_payload_size is read per-query and hot-reloads.
@@ -46,6 +54,7 @@ type Server struct {
 	mgr      *config.Manager
 	zones    *zone.Store
 	geo      GeoResolver
+	views    ViewResolver
 	m        *metrics.Metrics
 	qlog     *slog.Logger
 	xlog     *slog.Logger
@@ -66,6 +75,10 @@ func New(mgr *config.Manager, zones *zone.Store, geo GeoResolver, m *metrics.Met
 
 // SetNotifyReceiver wires the NOTIFY handler (call before Start).
 func (s *Server) SetNotifyReceiver(nr NotifyReceiver) { s.notify = nr }
+
+// SetViewResolver wires the resolver-IP view table (call before
+// Start). nil disables view matching.
+func (s *Server) SetViewResolver(vr ViewResolver) { s.views = vr }
 
 // Start binds UDP and TCP on every configured address and serves in
 // background goroutines. Bind errors are synchronous and fatal.

@@ -27,6 +27,7 @@ import (
 	"github.com/ostap-mykhaylyak/tarka/internal/paths"
 	"github.com/ostap-mykhaylyak/tarka/internal/server"
 	"github.com/ostap-mykhaylyak/tarka/internal/status"
+	"github.com/ostap-mykhaylyak/tarka/internal/views"
 	"github.com/ostap-mykhaylyak/tarka/internal/xfr"
 	"github.com/ostap-mykhaylyak/tarka/internal/zone"
 )
@@ -164,6 +165,15 @@ func runDaemon(cfgPath string) (err error) {
 	// A/AAAA into the zones, refreshed in the background.
 	alias.NewManager(mgr, zones, logs.Service).Start(stop)
 
+	// Resolver-IP views (provider split answers via the view: tag).
+	viewMgr := views.New(paths.ViewsFile, logs.Service)
+	if err := viewMgr.Watch(stop); err != nil {
+		return err
+	}
+	if n := viewMgr.Count(); n > 0 {
+		logs.Service.Info("resolver views loaded", "providers", n)
+	}
+
 	// Built-in ACME client: obtains and renews the configured
 	// certificates, validating DNS-01 against itself.
 	var acmeMgr *acme.Manager
@@ -200,6 +210,7 @@ func runDaemon(cfgPath string) (err error) {
 	// Authoritative DNS listeners (UDP + TCP on every address).
 	srv := server.New(mgr, zones, geo, m, logs.Query, logs.Xfr, logs.Service)
 	srv.SetNotifyReceiver(xfrMgr)
+	srv.SetViewResolver(viewMgr)
 	if err := srv.Start(); err != nil {
 		return err
 	}
