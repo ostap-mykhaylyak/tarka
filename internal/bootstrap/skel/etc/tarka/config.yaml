@@ -22,6 +22,11 @@ server:
   # transfers). Changing this requires a restart. e.g. "10s"
   tcp_timeout: 10s
 
+  # NSID (RFC 5001): the name this server reports when a query asks
+  # "who answered?" (dig +nsid). Handy to tell the three servers
+  # apart. Empty = the machine hostname.
+  identity: ""
+
 zones:
   # Directory with one YAML file per zone (hot-reloaded; an invalid
   # file is skipped with a warning and its last good version stays

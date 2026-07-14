@@ -44,6 +44,9 @@ answered with REFUSED.
   secondaries validate too)
 - JSON logs (`tarka.log`, `query.log`, `xfr.log`), rotation delegated
   to logrotate (SIGHUP reopens files)
+- Operational niceties: NSID (`dig +nsid`, tells the three servers
+  apart), Extended DNS Errors (a machine-readable reason on REFUSED /
+  SERVFAIL), Response Rate Limiting, and a master-side lag monitor
 - `tarka --status` / `--watch 2s` live status via a local Unix socket
   (Nagios-style exit codes, `--status-json` for machines)
 

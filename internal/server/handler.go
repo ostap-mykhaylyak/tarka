@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/hex"
 	"net"
 	"net/netip"
 	"strings"
@@ -28,6 +29,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	var qname string
 	var qtype uint16
+	var ede *dns.EDNS0_EDE // attached to the response for EDNS clients
 
 	switch {
 	case r.Opcode == dns.OpcodeNotify:
@@ -58,6 +60,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			case z == nil:
 				// Not our zone: authoritative-only, no recursion.
 				m.SetRcode(r, dns.RcodeRefused)
+				ede = &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeNotAuthoritative,
+					ExtraText: "not authoritative for this zone"}
 			case qtype == dns.TypeANY:
 				// Minimal ANY response (RFC 8482).
 				m.SetReply(r)
@@ -69,6 +73,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 				m.Rcode = res.Rcode
 				m.Authoritative = res.Authoritative
 				m.Answer, m.Ns, m.Extra = res.Answer, res.Ns, res.Extra
+				if res.Rcode == dns.RcodeServerFailure {
+					// A secondary that is not (yet) transferred or has
+					// expired: say so rather than a bare SERVFAIL.
+					ede = &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeOther,
+						ExtraText: "secondary zone not yet transferred or expired"}
+				}
 			}
 		}
 	}
@@ -80,6 +90,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if opt := r.IsEdns0(); opt != nil {
 		m.SetEdns0(uint16(cfg.Server.UDPPayloadSize), false)
 		s.echoECS(r, m, qname)
+		s.addNSID(opt, m)
+		if ede != nil {
+			if ropt := m.IsEdns0(); ropt != nil {
+				ropt.Option = append(ropt.Option, ede)
+			}
+		}
 		size = int(opt.UDPSize())
 		if size > cfg.Server.UDPPayloadSize {
 			size = cfg.Server.UDPPayloadSize
@@ -205,6 +221,31 @@ func (s *Server) echoECS(r, m *dns.Msg, qname string) {
 		echo.SourceScope = mask
 	}
 	opt.Option = append(opt.Option, echo)
+}
+
+// addNSID answers an NSID request (RFC 5001): a client that includes
+// an empty NSID option gets our identity back. The payload is hex per
+// the wire format.
+func (s *Server) addNSID(reqOpt *dns.OPT, m *dns.Msg) {
+	if s.identity == "" {
+		return
+	}
+	requested := false
+	for _, o := range reqOpt.Option {
+		if _, ok := o.(*dns.EDNS0_NSID); ok {
+			requested = true
+			break
+		}
+	}
+	if !requested {
+		return
+	}
+	if ropt := m.IsEdns0(); ropt != nil {
+		ropt.Option = append(ropt.Option, &dns.EDNS0_NSID{
+			Code: dns.EDNS0NSID,
+			Nsid: hex.EncodeToString([]byte(s.identity)),
+		})
+	}
 }
 
 // findECS returns the EDNS Client Subnet option of a query, if any.

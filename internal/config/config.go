@@ -157,6 +157,11 @@ type Server struct {
 	// TCPTimeout is the read/write timeout for TCP connections
 	// (queries and zone transfers).
 	TCPTimeout Duration `yaml:"tcp_timeout"`
+
+	// Identity is the NSID (RFC 5001) this server reports when a query
+	// asks for it — useful to tell apart anycast/multi-server setups
+	// ("which node answered?"). Empty means the machine hostname.
+	Identity string `yaml:"identity"`
 }
 
 // Zones locates the per-zone YAML files.

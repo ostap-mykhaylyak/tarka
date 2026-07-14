@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"syscall"
 
 	"github.com/miekg/dns"
@@ -42,19 +43,20 @@ type GeoResolver interface {
 // and RRL are read at Start: changing them requires a restart.
 // udp_payload_size is read per-query and hot-reloads.
 type Server struct {
-	mgr     *config.Manager
-	zones   *zone.Store
-	geo     GeoResolver
-	m       *metrics.Metrics
-	qlog    *slog.Logger
-	xlog    *slog.Logger
-	slog    *slog.Logger
-	notify  NotifyReceiver
-	rrl     *rrl.Limiter
-	tsig    map[string]string // key name -> secret; nil when disabled
-	tsigReq bool              // refuse unsigned AXFR
-	servers []*dns.Server
-	bound   []string // "udp host:port", "tcp host:port" (resolved, for tests and logs)
+	mgr      *config.Manager
+	zones    *zone.Store
+	geo      GeoResolver
+	m        *metrics.Metrics
+	qlog     *slog.Logger
+	xlog     *slog.Logger
+	slog     *slog.Logger
+	notify   NotifyReceiver
+	rrl      *rrl.Limiter
+	tsig     map[string]string // key name -> secret; nil when disabled
+	tsigReq  bool              // refuse unsigned AXFR
+	identity string            // NSID payload (hostname or configured)
+	servers  []*dns.Server
+	bound    []string // "udp host:port", "tcp host:port" (resolved, for tests and logs)
 }
 
 // New wires the server; Start binds the sockets. geo may be nil.
@@ -81,6 +83,12 @@ func (s *Server) Start() error {
 		s.tsig = cfg.TSIG.SecretMap()
 		s.tsigReq = cfg.TSIG.Require
 		s.slog.Info("tsig enabled for transfers", "key", cfg.TSIG.KeyName(), "require", s.tsigReq)
+	}
+	s.identity = cfg.Server.Identity
+	if s.identity == "" {
+		if h, err := os.Hostname(); err == nil {
+			s.identity = h
+		}
 	}
 
 	for _, addr := range cfg.Server.Listen {
