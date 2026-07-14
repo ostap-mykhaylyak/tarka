@@ -95,10 +95,11 @@ type GeoIP struct {
 	CountryDB string `yaml:"country_db"`
 }
 
-// Acme configures the built-in ACME client: tarka obtains and renews
-// certificates on its own, satisfying the DNS-01 challenges against
-// itself (it IS the authoritative server for the zones). No certbot,
-// no hooks, wildcards included.
+// Acme configures the built-in ACME client. Fully automatic: every
+// hosted primary zone gets a certificate for <zone> + *.<zone>,
+// issued and renewed only when the zone's delegation verifiably
+// points at this server (checked through public resolvers, exactly
+// the path the CA will follow). No domain lists, no certbot.
 type Acme struct {
 	Enabled bool   `yaml:"enabled"`
 	Email   string `yaml:"email"`
@@ -106,7 +107,7 @@ type Acme struct {
 	// zerossl) or a full RFC 8555 directory URL.
 	Directory string  `yaml:"directory"`
 	EAB       AcmeEAB `yaml:"eab"`
-	// CertDir receives account.key and live/<name>/{fullchain,privkey}.pem
+	// CertDir receives account.key and live/<zone>/{fullchain,privkey}.pem
 	// (certbot-style layout: point a reverse proxy straight at it).
 	CertDir string `yaml:"cert_dir"`
 	// RenewBefore renews a certificate when less than this remains.
@@ -114,8 +115,11 @@ type Acme struct {
 	// PropagationWait is the pause between publishing the challenge
 	// TXT (NOTIFY to the secondaries included) and telling the CA to
 	// validate.
-	PropagationWait Duration   `yaml:"propagation_wait"`
-	Certificates    []AcmeCert `yaml:"certificates"`
+	PropagationWait Duration `yaml:"propagation_wait"`
+	// Resolvers are the public recursive resolvers used to verify
+	// that a zone's delegation actually reaches this server before
+	// bothering the CA.
+	Resolvers []string `yaml:"resolvers"`
 }
 
 // AcmeEAB is the External Account Binding some CAs require at
@@ -123,14 +127,6 @@ type Acme struct {
 type AcmeEAB struct {
 	KID  string `yaml:"kid"`
 	HMAC string `yaml:"hmac"` // base64url-encoded key
-}
-
-// AcmeCert is one certificate to obtain and keep renewed.
-type AcmeCert struct {
-	// Name of the live/<name>/ directory; default: the first domain
-	// without any "*." prefix.
-	Name    string   `yaml:"name"`
-	Domains []string `yaml:"domains"` // SANs; "*.example.com" allowed
 }
 
 // Default returns the configuration with ALL production defaults, so
@@ -157,6 +153,7 @@ func Default() *Config {
 			CertDir:         paths.CertsDir,
 			RenewBefore:     Duration(30 * 24 * time.Hour),
 			PropagationWait: Duration(30 * time.Second),
+			Resolvers:       []string{"1.1.1.1:53", "8.8.8.8:53"},
 		},
 	}
 }
@@ -225,13 +222,19 @@ func (c *Config) validate() error {
 		if c.Acme.PropagationWait.Std() < 0 {
 			return fmt.Errorf("acme.propagation_wait must be >= 0")
 		}
-		if len(c.Acme.Certificates) == 0 {
-			return fmt.Errorf("acme.certificates must list at least one certificate when acme.enabled is true")
-		}
-		for i, cert := range c.Acme.Certificates {
-			if len(cert.Domains) == 0 {
-				return fmt.Errorf("acme.certificates[%d]: domains is required", i)
+		// Invalid resolver entries are skipped with a warning, but a
+		// delegation check without any resolver cannot work.
+		valid := c.Acme.Resolvers[:0]
+		for _, r := range c.Acme.Resolvers {
+			if _, _, err := net.SplitHostPort(r); err != nil {
+				c.Warnings = append(c.Warnings, fmt.Sprintf("acme.resolvers: skipping invalid address %q", r))
+				continue
 			}
+			valid = append(valid, r)
+		}
+		c.Acme.Resolvers = valid
+		if len(c.Acme.Resolvers) == 0 {
+			return fmt.Errorf("acme.resolvers: at least one valid resolver is required when acme.enabled is true")
 		}
 		if c.Acme.Directory == "zerossl" && (c.Acme.EAB.KID == "" || c.Acme.EAB.HMAC == "") {
 			return fmt.Errorf("acme.eab (kid + hmac) is required for zerossl")

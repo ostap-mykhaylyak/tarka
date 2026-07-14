@@ -114,27 +114,36 @@ func TestUDPPayloadSizeBounds(t *testing.T) {
 
 func TestAcmeValidation(t *testing.T) {
 	// Enabled without email.
-	path := writeTemp(t, "acme:\n  enabled: true\n  certificates:\n    - domains: [example.com]\n")
+	path := writeTemp(t, "acme:\n  enabled: true\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "acme.email") {
 		t.Fatalf("acme without email must fail, got %v", err)
 	}
-	// Enabled without certificates.
-	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "certificates") {
-		t.Fatalf("acme without certificates must fail, got %v", err)
-	}
 	// ZeroSSL requires EAB.
-	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n  directory: zerossl\n  certificates:\n    - domains: [example.com]\n")
+	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n  directory: zerossl\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "eab") {
 		t.Fatalf("zerossl without EAB must fail, got %v", err)
 	}
-	// Valid config keeps defaults.
-	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n  certificates:\n    - domains: [example.com, \"*.example.com\"]\n")
+	// Invalid resolvers are skipped with a warning; none left = fatal.
+	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n  resolvers: [\"9.9.9.9:53\", \"broken\"]\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Acme.Directory != "letsencrypt" || cfg.Acme.RenewBefore.Std() != 30*24*time.Hour {
+	if len(cfg.Acme.Resolvers) != 1 || len(cfg.Warnings) != 1 {
+		t.Fatalf("invalid resolver must be skipped with a warning: %+v %v", cfg.Acme.Resolvers, cfg.Warnings)
+	}
+	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n  resolvers: [broken]\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "resolvers") {
+		t.Fatalf("no valid resolver must fail, got %v", err)
+	}
+	// Minimal valid config keeps defaults (no domain lists: automatic).
+	path = writeTemp(t, "acme:\n  enabled: true\n  email: a@b.c\n")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Acme.Directory != "letsencrypt" || cfg.Acme.RenewBefore.Std() != 30*24*time.Hour ||
+		len(cfg.Acme.Resolvers) != 2 {
 		t.Fatalf("acme defaults lost: %+v", cfg.Acme)
 	}
 }

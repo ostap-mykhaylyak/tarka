@@ -22,10 +22,12 @@ answered with REFUSED.
 - GeoDNS: tag records with `geo: [IT, EU, ...]` (MaxMind
   GeoLite2-Country, hot-swapped) and clients get the nearest variant;
   EDNS Client Subnet is honored and echoed (RFC 7871)
-- Built-in ACME client: tarka obtains **and renews** certificates
-  from Let's Encrypt / ZeroSSL / any RFC 8555 CA fully on its own,
-  answering the DNS-01 challenges itself — wildcards included, no
-  certbot, no hooks, no cron
+- Built-in ACME client, fully automatic: every hosted zone gets a
+  `zone + *.zone` certificate from Let's Encrypt / ZeroSSL / any
+  RFC 8555 CA, obtained **and renewed** by tarka itself via its own
+  DNS-01 answers — no domain lists, no certbot, no hooks, no cron.
+  Zones whose delegation does not point at the server are skipped
+  automatically
 - ACME DNS-01 hook surface for external clients too:
   `tarka --dns01-set <domain> <token>` / `--dns01-clear` publish the
   `_acme-challenge` TXT (serial bump + NOTIFY included, so
@@ -63,20 +65,25 @@ secondaries.
 ## Certificates (ACME DNS-01, fully automatic)
 
 tarka is authoritative for your zones, so it can prove domain
-ownership by itself: enable the built-in ACME client and it obtains
-and renews the certificates with no external tooling — wildcards
-included.
+ownership by itself. Enable the built-in ACME client and every hosted
+zone gets a `zone.tld + *.zone.tld` certificate, obtained and renewed
+with no external tooling and **no domain list to maintain**:
 
 ```yaml
 acme:
   enabled: true
   email: hostmaster@example.com
   directory: letsencrypt        # or letsencrypt-staging / zerossl / URL
-  certificates:
-    - domains: [example.com, "*.example.com"]
 ```
 
-Certificates land in `/var/log/tarka/certs/live/<name>/fullchain.pem`
+Add a zone file, get a certificate. Before contacting the CA, tarka
+publishes a probe TXT in the zone and checks through public resolvers
+(1.1.1.1 / 8.8.8.8) that the delegation actually reaches the server —
+zones not (yet) pointed here are silently skipped, so parked zones
+never fail or burn CA rate limits; the check re-runs at every cycle
+and the certificate appears on its own once the NS records go live.
+
+Certificates land in `/var/log/tarka/certs/live/<zone>/fullchain.pem`
 + `privkey.pem` (certbot-style layout): point your reverse proxy at
 that directory and you are done. Renewal runs every 12 hours and
 kicks in 30 days before expiry; the challenge TXT records bump the

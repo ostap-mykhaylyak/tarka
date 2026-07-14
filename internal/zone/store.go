@@ -275,6 +275,21 @@ func (s *Store) Find(qname string) *Zone {
 // Count returns the number of zones currently answering.
 func (s *Store) Count() int { return len(*s.zones.Load()) }
 
+// PrimaryZones returns the apexes (lowercase FQDN) of the loaded
+// primary zones, sorted. The ACME manager derives its certificate
+// candidates from this list.
+func (s *Store) PrimaryZones() []string {
+	zones := *s.zones.Load()
+	out := make([]string, 0, len(zones))
+	for name, z := range zones {
+		if z.Type == "primary" && z.loaded {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Snapshot returns the per-file status, sorted by filename.
 func (s *Store) Snapshot() []Info {
 	s.mu.Lock()

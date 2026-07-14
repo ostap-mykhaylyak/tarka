@@ -64,13 +64,13 @@ func (m *Manager) client(ctx context.Context, cfg config.Acme) (*xacme.Client, e
 
 // issue runs one full ACME order: authorize every domain via DNS-01
 // (self-published), finalize with a fresh key and store the result.
-func (m *Manager) issue(ctx context.Context, cfg config.Acme, c config.AcmeCert, name string) error {
+func (m *Manager) issue(ctx context.Context, cfg config.Acme, domains []string, name string) error {
 	cl, err := m.client(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
-	order, err := cl.AuthorizeOrder(ctx, xacme.DomainIDs(c.Domains...))
+	order, err := cl.AuthorizeOrder(ctx, xacme.DomainIDs(domains...))
 	if err != nil {
 		return fmt.Errorf("authorize order: %w", err)
 	}
@@ -150,7 +150,7 @@ func (m *Manager) issue(ctx context.Context, cfg config.Acme, c config.AcmeCert,
 		return err
 	}
 	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		DNSNames: c.Domains,
+		DNSNames: domains,
 	}, certKey)
 	if err != nil {
 		return fmt.Errorf("csr: %w", err)
@@ -168,7 +168,7 @@ func (m *Manager) issue(ctx context.Context, cfg config.Acme, c config.AcmeCert,
 	if err != nil {
 		return fmt.Errorf("verify stored certificate: %w", err)
 	}
-	m.log.Info("certificate obtained", "cert", name, "domains", c.Domains,
+	m.log.Info("certificate obtained", "cert", name, "domains", domains,
 		"not_after", cert.NotAfter.UTC().Format(time.RFC3339), "dir", dir)
 	return nil
 }

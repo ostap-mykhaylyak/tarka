@@ -12,8 +12,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	"github.com/ostap-mykhaylyak/tarka/internal/config"
 )
 
 // selfSigned builds a throwaway certificate chain for storage and
@@ -116,17 +114,15 @@ func TestDirectoryPresets(t *testing.T) {
 	}
 }
 
-func TestCertName(t *testing.T) {
-	for _, tc := range []struct {
-		cert config.AcmeCert
-		want string
-	}{
-		{config.AcmeCert{Domains: []string{"example.com"}}, "example.com"},
-		{config.AcmeCert{Domains: []string{"*.example.com", "example.com"}}, "example.com"},
-		{config.AcmeCert{Name: "My Shop", Domains: []string{"shop.example.com"}}, "my_shop"},
-	} {
-		if got := certName(tc.cert); got != tc.want {
-			t.Fatalf("certName(%+v) = %q, want %q", tc.cert, got, tc.want)
-		}
+func TestCertNameAndDomains(t *testing.T) {
+	if got := certName("example.com."); got != "example.com" {
+		t.Fatalf("certName = %q", got)
+	}
+	if got := certName("XN--caf-dma.example."); got != "xn--caf-dma.example" {
+		t.Fatalf("certName must lowercase: %q", got)
+	}
+	d := zoneDomains("example.com.")
+	if len(d) != 2 || d[0] != "example.com" || d[1] != "*.example.com" {
+		t.Fatalf("zoneDomains broken: %v", d)
 	}
 }

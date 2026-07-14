@@ -5,8 +5,15 @@
 // store (serial bump and NOTIFY included: validation also passes
 // against the secondaries). No certbot, no hooks, wildcards included.
 //
+// Fully automatic: every hosted primary zone is a candidate for a
+// <zone> + *.<zone> certificate. Before bothering the CA, the
+// delegation is verified end to end (a probe TXT published in the
+// zone must be visible through public resolvers): a zone that does
+// not point at this server is silently skipped, so parked zones
+// neither fail nor burn CA rate limits.
+//
 // Certificates land in a certbot-style layout
-// (<cert_dir>/live/<name>/fullchain.pem + privkey.pem) so a reverse
+// (<cert_dir>/live/<zone>/fullchain.pem + privkey.pem) so a reverse
 // proxy can point straight at it.
 package acme
 
@@ -34,25 +41,38 @@ const (
 	issueTimeout = 10 * time.Minute
 )
 
-// DNS01Publisher is the slice of the zone store the ACME flow needs.
-type DNS01Publisher interface {
+// ZoneSource is the slice of the zone store the ACME flow needs.
+type ZoneSource interface {
 	SetDNS01(domain, token string) error
 	ClearDNS01(domain, token string) error
+	PrimaryZones() []string
+}
+
+// certState is the outcome of the last check of one certificate.
+type certState struct {
+	err     string // issuance failed (retried next cycle)
+	skipped string // delegation not pointing here: no-op by design
 }
 
 // Manager runs the issuance/renewal loop.
 type Manager struct {
 	mgr   *config.Manager
-	zones DNS01Publisher
+	zones ZoneSource
 	log   *slog.Logger
 
+	// delegated verifies that a zone's delegation reaches this
+	// server; overridable in tests.
+	delegated func(ctx context.Context, cfg config.Acme, zoneName string) error
+
 	mu    sync.Mutex
-	state map[string]string // last error per cert name ("" = ok)
+	state map[string]certState // by cert name
 }
 
 // NewManager wires the ACME manager; Start launches the loop.
-func NewManager(mgr *config.Manager, zones DNS01Publisher, log *slog.Logger) *Manager {
-	return &Manager{mgr: mgr, zones: zones, log: log, state: map[string]string{}}
+func NewManager(mgr *config.Manager, zones ZoneSource, log *slog.Logger) *Manager {
+	m := &Manager{mgr: mgr, zones: zones, log: log, state: map[string]certState{}}
+	m.delegated = m.delegationCheck
+	return m
 }
 
 // Start runs the renewal loop until stop is closed. The first check
@@ -76,19 +96,16 @@ func (m *Manager) Start(stop <-chan struct{}) {
 	}()
 }
 
-// checkAll ensures every configured certificate; reports whether the
-// cycle was fully clean.
+// checkAll walks the hosted primary zones and ensures each
+// certificate; reports whether the cycle was fully clean.
 func (m *Manager) checkAll(stop <-chan struct{}) bool {
 	cfg := m.mgr.Get().Acme
 	if !cfg.Enabled {
 		return true
 	}
 	clean := true
-	for _, c := range cfg.Certificates {
-		if len(c.Domains) == 0 {
-			continue
-		}
-		name := certName(c)
+	for _, apex := range m.zones.PrimaryZones() {
+		name := certName(apex)
 
 		ctx, cancel := context.WithTimeout(context.Background(), issueTimeout)
 		done := make(chan struct{})
@@ -99,41 +116,70 @@ func (m *Manager) checkAll(stop <-chan struct{}) bool {
 			case <-done:
 			}
 		}()
-		err := m.ensure(ctx, cfg, c, name)
+		st := m.ensure(ctx, cfg, apex, name)
 		close(done)
 		cancel()
 
 		m.mu.Lock()
-		if err != nil {
-			m.state[name] = err.Error()
-			clean = false
-		} else {
-			m.state[name] = ""
-		}
+		m.state[name] = st
 		m.mu.Unlock()
-		if err != nil {
-			m.log.Error("certificate check failed", "cert", name, "error", err)
+		if st.err != "" {
+			clean = false
+			m.log.Error("certificate check failed", "cert", name, "error", st.err)
 		}
 	}
 	return clean
 }
 
-// ensure issues (or renews) one certificate when needed.
-func (m *Manager) ensure(ctx context.Context, cfg config.Acme, c config.AcmeCert, name string) error {
+// ensure issues (or renews) the certificate of one zone when needed.
+// A zone whose delegation does not reach this server is skipped: no
+// certificate, no error — by design.
+func (m *Manager) ensure(ctx context.Context, cfg config.Acme, apex, name string) certState {
+	domains := zoneDomains(apex)
 	cur, err := readCert(liveDir(cfg.CertDir, name))
-	if err == nil && !needsRenew(cur, c.Domains, cfg.RenewBefore.Std()) {
-		return nil
+	if err == nil && !needsRenew(cur, domains, cfg.RenewBefore.Std()) {
+		return certState{}
 	}
 	reason := "missing"
 	if err == nil {
-		reason = renewReason(cur, c.Domains, cfg.RenewBefore.Std())
+		reason = renewReason(cur, domains, cfg.RenewBefore.Std())
 	}
-	m.log.Info("obtaining certificate", "cert", name, "domains", c.Domains, "reason", reason)
-	return m.issue(ctx, cfg, c, name)
+
+	if err := m.delegated(ctx, cfg, apex); err != nil {
+		m.log.Info("zone not delegated here, certificate skipped", "zone", apex, "detail", err.Error())
+		return certState{skipped: err.Error()}
+	}
+
+	m.log.Info("obtaining certificate", "cert", name, "domains", domains, "reason", reason)
+	if err := m.issue(ctx, cfg, domains, name); err != nil {
+		return certState{err: err.Error()}
+	}
+	return certState{}
+}
+
+// zoneDomains derives the certificate SANs of a zone: the apex and
+// everything under it.
+func zoneDomains(apex string) []string {
+	base := strings.TrimSuffix(apex, ".")
+	return []string{base, "*." + base}
+}
+
+// certName picks the live/ directory name from the zone apex.
+func certName(apex string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '_'
+		}
+	}, strings.TrimSuffix(apex, "."))
 }
 
 // needsRenew reports whether the certificate must be reissued: too
-// close to expiry, or the configured domain set changed.
+// close to expiry, or the domain set changed.
 func needsRenew(cert *x509.Certificate, domains []string, renewBefore time.Duration) bool {
 	if time.Until(cert.NotAfter) < renewBefore {
 		return true
@@ -146,26 +192,6 @@ func renewReason(cert *x509.Certificate, domains []string, renewBefore time.Dura
 		return "expiring " + cert.NotAfter.UTC().Format(time.RFC3339)
 	}
 	return "domains changed"
-}
-
-// certName picks the live/ directory name: the explicit name, or the
-// first domain without any wildcard prefix.
-func certName(c config.AcmeCert) string {
-	name := c.Name
-	if name == "" {
-		name = strings.TrimPrefix(normalizeDomain(c.Domains[0]), "*.")
-	}
-	// The name becomes a directory: keep it to a safe charset.
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r + ('a' - 'A')
-		default:
-			return '_'
-		}
-	}, name)
 }
 
 func sameDomains(a, b []string) bool {
@@ -195,22 +221,25 @@ type CertInfo struct {
 	Domains  []string  `json:"domains"`
 	Issued   bool      `json:"issued"`
 	NotAfter time.Time `json:"not_after,omitempty"`
+	Skipped  string    `json:"skipped,omitempty"` // zone not delegated here
 	Error    string    `json:"error,omitempty"`
 }
 
-// Snapshot reads the on-disk state of every configured certificate.
+// Snapshot reads the on-disk state of every candidate certificate.
 // Safe on a nil receiver (acme disabled at startup).
 func (m *Manager) Snapshot() []CertInfo {
 	if m == nil {
 		return nil
 	}
 	cfg := m.mgr.Get().Acme
+	zones := m.zones.PrimaryZones()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]CertInfo, 0, len(cfg.Certificates))
-	for _, c := range cfg.Certificates {
-		name := certName(c)
-		info := CertInfo{Name: name, Domains: c.Domains, Error: m.state[name]}
+	out := make([]CertInfo, 0, len(zones))
+	for _, apex := range zones {
+		name := certName(apex)
+		st := m.state[name]
+		info := CertInfo{Name: name, Domains: zoneDomains(apex), Skipped: st.skipped, Error: st.err}
 		if cert, err := readCert(liveDir(cfg.CertDir, name)); err == nil {
 			info.Issued = true
 			info.NotAfter = cert.NotAfter

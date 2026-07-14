@@ -37,12 +37,17 @@ geoip:
   country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
 
 acme:
-  # Built-in ACME client: tarka obtains AND renews the certificates
-  # below on its own, answering the DNS-01 challenges itself (it is
-  # the authoritative server). Wildcards included, no certbot needed.
-  # Certificates land in <cert_dir>/live/<name>/fullchain.pem +
-  # privkey.pem (certbot-style layout): point the reverse proxy there.
-  # Enabling requires a restart.
+  # Built-in ACME client, fully automatic: EVERY hosted primary zone
+  # gets a certificate for <zone> + *.<zone>, obtained and renewed by
+  # tarka itself (it answers its own DNS-01 challenges). There is no
+  # domain list to maintain: add a zone file, get a certificate.
+  # Before contacting the CA, tarka verifies through the resolvers
+  # below that the zone's delegation actually points here; a zone
+  # that does not (yet) is silently skipped — no failures, no CA
+  # rate-limit burn. Certificates land in
+  # <cert_dir>/live/<zone>/fullchain.pem + privkey.pem (certbot-style
+  # layout): point the reverse proxy there. Enabling requires a
+  # restart.
   enabled: false
   email: ""                  # required: CA account contact
   # letsencrypt | letsencrypt-staging | zerossl | any directory URL.
@@ -55,9 +60,5 @@ acme:
   renew_before: 30d          # renew when less than this remains
   propagation_wait: 30s      # pause before the CA validates (lets
                              # NOTIFY reach the secondaries)
-  certificates: []
-  # e.g.:
-  #certificates:
-  #  - domains: [example.com, "*.example.com"]
-  #  - name: shop            # live/shop/; default is the first domain
-  #    domains: [shop.example.net]
+  # Public recursive resolvers used for the delegation check.
+  resolvers: ["1.1.1.1:53", "8.8.8.8:53"]
