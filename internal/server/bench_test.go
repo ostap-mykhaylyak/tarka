@@ -48,7 +48,7 @@ func benchServer(b *testing.B, qlog *slog.Logger) *Server {
 	return benchServerCfg(b, qlog, "server:\n  listen: [\"127.0.0.1:0\"]\n")
 }
 
-func benchServerCfg(b *testing.B, qlog *slog.Logger, cfgBody string) *Server {
+func benchServerCfg(b testing.TB, qlog *slog.Logger, cfgBody string) *Server {
 	b.Helper()
 	dir := b.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
