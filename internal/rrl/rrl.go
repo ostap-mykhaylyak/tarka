@@ -31,6 +31,14 @@ type bucket struct {
 	slipSeen int
 }
 
+// maxBuckets caps the tracking table. An attacker flooding random
+// query names (each a distinct category) would otherwise grow the map
+// without bound, turning the limiter itself into a memory-exhaustion
+// vector. At the cap we force a sweep and, if still full, fail open
+// (let the response through) so memory stays bounded — the worst case
+// degrades to "no rate limiting", never to an OOM.
+const maxBuckets = 500_000
+
 // Limiter is a sharded token-bucket rate limiter.
 type Limiter struct {
 	rps      float64
@@ -73,6 +81,15 @@ func (l *Limiter) Check(client netip.Addr, category string) Action {
 
 	b := l.buckets[key]
 	if b == nil {
+		if len(l.buckets) >= maxBuckets {
+			// Table full: force an immediate sweep, then fail open if
+			// it is still saturated. Bounds memory under a flood.
+			l.lastGC = time.Time{}
+			l.gcLocked(now)
+			if len(l.buckets) >= maxBuckets {
+				return Pass
+			}
+		}
 		// A fresh bucket starts full (one second of allowance), so
 		// isolated queries always pass.
 		b = &bucket{tokens: l.rps, last: now}

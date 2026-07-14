@@ -157,3 +157,40 @@ func mustRR(t *testing.T, s string) dns.RR {
 	}
 	return rr
 }
+
+func TestValidZoneName(t *testing.T) {
+	good := []string{"example.com.", "a-b.example.com.", "_dmarc.example.com.", "xn--caf-dma.example."}
+	for _, n := range good {
+		if !ValidZoneName(n) {
+			t.Fatalf("%q must be valid", n)
+		}
+	}
+	// Path-traversal and separator attempts arriving via a catalog PTR
+	// must be rejected before ever becoming a filename.
+	bad := []string{"", ".", "../../etc/cron.d/x.", "a/b.", "a\\b.", "a\x00b.", "a..b."}
+	for _, n := range bad {
+		if ValidZoneName(n) {
+			t.Fatalf("%q must be rejected", n)
+		}
+	}
+}
+
+func TestCatalogMembersRejectsUnsafeNames(t *testing.T) {
+	apex := "catalog.tarka."
+	rrs := []dns.RR{
+		mustRR(t, "version."+apex+" 60 IN TXT \"2\""),
+		mustRR(t, "aaaa.zones."+apex+" 60 IN PTR good.example."),
+		// A hand-built PTR whose target carries a path separator.
+		&dns.PTR{
+			Hdr: dns.RR_Header{Name: "bbbb.zones." + apex, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 60},
+			Ptr: "e/vil.example.",
+		},
+	}
+	members, ok := CatalogMembers(apex, rrs)
+	if !ok {
+		t.Fatal("version 2 must be accepted")
+	}
+	if len(members) != 1 || members[0] != "good.example." {
+		t.Fatalf("unsafe member must be dropped, got %v", members)
+	}
+}

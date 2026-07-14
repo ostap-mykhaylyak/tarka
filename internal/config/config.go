@@ -442,6 +442,27 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// PublicBind reports whether any listener is reachable from off-host
+// (not loopback). Used for the RRL hardening advisory at startup.
+func (c *Config) PublicBind() bool {
+	for _, addr := range c.Server.Listen {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		if host == "" { // ":53" wildcard
+			return true
+		}
+		if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+			return true
+		}
+		if ip := net.ParseIP(host); ip == nil && host != "localhost" {
+			return true
+		}
+	}
+	return false
+}
+
 // watchDir resolves the directory to watch: editors replace the file
 // atomically (rename), so watching the parent directory is the
 // reliable pattern.

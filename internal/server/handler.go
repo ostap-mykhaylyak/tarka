@@ -184,15 +184,25 @@ func (s *Server) echoECS(r, m *dns.Msg, qname string) {
 	if opt == nil {
 		return
 	}
+	// Clamp the client-supplied netmask to its family maximum: never
+	// reflect an out-of-range value from untrusted input.
+	maxMask := uint8(32)
+	if ecs.Family == 2 {
+		maxMask = 128
+	}
+	mask := ecs.SourceNetmask
+	if mask > maxMask {
+		mask = maxMask
+	}
 	echo := &dns.EDNS0_SUBNET{
 		Code:          dns.EDNS0SUBNET,
 		Family:        ecs.Family,
-		SourceNetmask: ecs.SourceNetmask,
+		SourceNetmask: mask,
 		SourceScope:   0,
 		Address:       ecs.Address,
 	}
 	if z := s.zones.Find(qname); z != nil && z.HasGeo() && s.geo != nil && s.geo.Loaded() {
-		echo.SourceScope = ecs.SourceNetmask
+		echo.SourceScope = mask
 	}
 	opt.Option = append(opt.Option, echo)
 }

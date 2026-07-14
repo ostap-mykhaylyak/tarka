@@ -108,6 +108,11 @@ func runDaemon(cfgPath string) (err error) {
 	for _, w := range mgr.Get().Warnings {
 		logs.Service.Warn("config warning", "warning", w)
 	}
+	// Hardening advisory: a public authoritative server without RRL is
+	// an open amplification reflector.
+	if mgr.Get().PublicBind() && !mgr.Get().RRL.Enabled {
+		logs.Service.Warn("public bind without Response Rate Limiting: enable rrl to avoid being used as an amplification reflector")
+	}
 
 	m := metrics.New()
 	stop := make(chan struct{})

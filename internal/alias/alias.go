@@ -7,6 +7,7 @@
 package alias
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"sort"
@@ -19,6 +20,11 @@ import (
 )
 
 const queryTimeout = 5 * time.Second
+
+// maxAliasAddrs caps how many addresses one ALIAS target may
+// contribute, so a hostile or misconfigured target (or a poisoned
+// resolver) cannot bloat the zone and its AXFR.
+const maxAliasAddrs = 64
 
 // Manager periodically resolves the ALIAS targets of every hosted
 // zone and materializes their A/AAAA into the store.
@@ -114,6 +120,9 @@ func queryBoth(resolver, target string) (v4, v6 []net.IP, err error) {
 		if e != nil {
 			return nil, nil, e
 		}
+		if in.Rcode != dns.RcodeSuccess && in.Rcode != dns.RcodeNameError {
+			return nil, nil, fmt.Errorf("resolver %s: %s", resolver, dns.RcodeToString[in.Rcode])
+		}
 		if in.Truncated {
 			tc := &dns.Client{Net: "tcp", Timeout: queryTimeout}
 			if in, _, e = tc.Exchange(msg, resolver); e != nil {
@@ -123,9 +132,13 @@ func queryBoth(resolver, target string) (v4, v6 []net.IP, err error) {
 		for _, rr := range in.Answer {
 			switch a := rr.(type) {
 			case *dns.A:
-				v4 = append(v4, a.A)
+				if ip := a.A.To4(); ip != nil && len(v4) < maxAliasAddrs {
+					v4 = append(v4, ip)
+				}
 			case *dns.AAAA:
-				v6 = append(v6, a.AAAA)
+				if ip := a.AAAA.To16(); ip != nil && len(v6) < maxAliasAddrs {
+					v6 = append(v6, ip)
+				}
 			}
 		}
 	}

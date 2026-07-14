@@ -140,11 +140,12 @@ func (s *Store) buildCatalogLocked(members []string) *Zone {
 
 // CatalogMembers extracts the member zones of a transferred catalog
 // (secondary side). A version TXT other than "2" rejects the whole
-// catalog.
-func CatalogMembers(catalogApex string, rrs []dns.RR) ([]string, bool) {
+// catalog. Member names arrive over the network: only well-formed
+// domain names are accepted (a malformed one — e.g. carrying a path
+// separator — is dropped, never trusted downstream as a filename).
+func CatalogMembers(catalogApex string, rrs []dns.RR) (members []string, versionOK bool) {
 	apex := fqdn(catalogApex)
-	versionOK := true
-	var members []string
+	versionOK = true
 	for _, rr := range rrs {
 		owner := strings.ToLower(rr.Header().Name)
 		if txt, ok := rr.(*dns.TXT); ok && owner == "version."+apex {
@@ -153,10 +154,38 @@ func CatalogMembers(catalogApex string, rrs []dns.RR) ([]string, bool) {
 			}
 		}
 		if ptr, ok := rr.(*dns.PTR); ok && strings.HasSuffix(owner, ".zones."+apex) {
-			members = append(members, fqdn(ptr.Ptr))
+			if name := fqdn(ptr.Ptr); ValidZoneName(name) {
+				members = append(members, name)
+			}
 		}
 	}
 	return members, versionOK
+}
+
+// ValidZoneName reports whether name is a well-formed domain name that
+// is also safe to use as a filesystem path component: no separators,
+// no NUL, no empty or traversal labels. Enforced on every zone name
+// that reaches us over the network before it is trusted as an apex or
+// a persistence filename.
+func ValidZoneName(name string) bool {
+	if name == "" || name == "." {
+		return false
+	}
+	if len(name) > 255 {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return false
+	}
+	if _, ok := dns.IsDomainName(name); !ok {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		if label == "" || label == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // dynamicKey namespaces the file-less zones in the files map. "~"
@@ -167,8 +196,13 @@ func dynamicKey(apex string) string { return "~" + apex }
 // AddDynamicSecondary provisions a secondary zone with no YAML file
 // (the catalog itself, or one of its members). Idempotent: an
 // existing dynamic zone with the same primaries is left untouched.
+// A malformed apex is refused: it must never become a filename.
 func (s *Store) AddDynamicSecondary(apex string, primaries []string) {
 	apex = fqdn(apex)
+	if !ValidZoneName(apex) {
+		s.log.Error("refusing to provision zone with invalid name", "zone", apex)
+		return
+	}
 	key := dynamicKey(apex)
 
 	s.mu.Lock()

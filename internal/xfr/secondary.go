@@ -17,6 +17,12 @@ import (
 // never been transferred (there is no SOA to take timers from yet).
 const noSOARetry = time.Minute
 
+// maxTransferRecords caps AXFR ingestion so a malicious or
+// compromised primary (or a MITM on an untrusted, non-TSIG link)
+// cannot exhaust memory with an unbounded stream. Generous for any
+// realistic hosting zone.
+const maxTransferRecords = 500_000
+
 // secLoop is the refresh loop of one secondary zone.
 type secLoop struct {
 	apex string
@@ -252,6 +258,9 @@ func (mg *Manager) transferIn(apex, addr string) ([]dns.RR, error) {
 			return nil, fmt.Errorf("axfr %s: %w", addr, e.Error)
 		}
 		rrs = append(rrs, e.RR...)
+		if len(rrs) > maxTransferRecords {
+			return nil, fmt.Errorf("axfr %s: too many records (> %d), aborting", addr, maxTransferRecords)
+		}
 	}
 	if findSOA(rrs) == nil {
 		return nil, fmt.Errorf("axfr %s: no SOA in transfer", addr)
