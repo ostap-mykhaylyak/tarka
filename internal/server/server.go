@@ -19,6 +19,7 @@ import (
 	"github.com/ostap-mykhaylyak/tarka/internal/config"
 	"github.com/ostap-mykhaylyak/tarka/internal/geoip"
 	"github.com/ostap-mykhaylyak/tarka/internal/metrics"
+	"github.com/ostap-mykhaylyak/tarka/internal/rrl"
 	"github.com/ostap-mykhaylyak/tarka/internal/zone"
 )
 
@@ -37,9 +38,9 @@ type GeoResolver interface {
 	Loaded() bool
 }
 
-// Server owns the DNS listeners. Listen addresses and tcp_timeout are
-// read at Start: changing them requires a restart. udp_payload_size
-// is read per-query and hot-reloads.
+// Server owns the DNS listeners. Listen addresses, tcp_timeout, TSIG
+// and RRL are read at Start: changing them requires a restart.
+// udp_payload_size is read per-query and hot-reloads.
 type Server struct {
 	mgr     *config.Manager
 	zones   *zone.Store
@@ -49,6 +50,9 @@ type Server struct {
 	xlog    *slog.Logger
 	slog    *slog.Logger
 	notify  NotifyReceiver
+	rrl     *rrl.Limiter
+	tsig    map[string]string // key name -> secret; nil when disabled
+	tsigReq bool              // refuse unsigned AXFR
 	servers []*dns.Server
 	bound   []string // "udp host:port", "tcp host:port" (resolved, for tests and logs)
 }
@@ -66,6 +70,19 @@ func (s *Server) SetNotifyReceiver(nr NotifyReceiver) { s.notify = nr }
 func (s *Server) Start() error {
 	cfg := s.mgr.Get()
 	timeout := cfg.Server.TCPTimeout.Std()
+
+	if cfg.RRL.Enabled {
+		s.rrl = rrl.New(cfg.RRL.ResponsesPerSecond, cfg.RRL.Window.Std(),
+			cfg.RRL.Slip, cfg.RRL.IPv4Prefix, cfg.RRL.IPv6Prefix)
+		s.slog.Info("response rate limiting enabled",
+			"responses_per_second", cfg.RRL.ResponsesPerSecond, "slip", cfg.RRL.Slip)
+	}
+	if cfg.TSIG.Enabled() {
+		s.tsig = cfg.TSIG.SecretMap()
+		s.tsigReq = cfg.TSIG.Require
+		s.slog.Info("tsig enabled for transfers", "key", cfg.TSIG.KeyName(), "require", s.tsigReq)
+	}
+
 	for _, addr := range cfg.Server.Listen {
 		pc, err := net.ListenPacket("udp", addr)
 		if err != nil {
@@ -76,8 +93,8 @@ func (s *Server) Start() error {
 			pc.Close()
 			return bindError("tcp", addr, err)
 		}
-		udp := &dns.Server{PacketConn: pc, Handler: s}
-		tcp := &dns.Server{Listener: l, Handler: s, ReadTimeout: timeout, WriteTimeout: timeout}
+		udp := &dns.Server{PacketConn: pc, Handler: s, TsigSecret: s.tsig}
+		tcp := &dns.Server{Listener: l, Handler: s, ReadTimeout: timeout, WriteTimeout: timeout, TsigSecret: s.tsig}
 		s.servers = append(s.servers, udp, tcp)
 		s.bound = append(s.bound,
 			"udp "+pc.LocalAddr().String(),

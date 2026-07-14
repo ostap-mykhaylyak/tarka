@@ -92,6 +92,9 @@ type Metrics struct {
 	xfrIn      atomic.Int64
 	notifySent atomic.Int64
 	notifyRecv atomic.Int64
+
+	rrlDropped   atomic.Int64
+	rrlTruncated atomic.Int64
 }
 
 // New returns a Metrics anchored at the current time.
@@ -102,6 +105,10 @@ func (m *Metrics) XfrOut()         { m.xfrOut.Add(1) }
 func (m *Metrics) XfrIn()          { m.xfrIn.Add(1) }
 func (m *Metrics) NotifySent()     { m.notifySent.Add(1) }
 func (m *Metrics) NotifyReceived() { m.notifyRecv.Add(1) }
+
+// RRL counters, updated on the UDP hot path.
+func (m *Metrics) RRLDropped()   { m.rrlDropped.Add(1) }
+func (m *Metrics) RRLTruncated() { m.rrlTruncated.Add(1) }
 
 // QueryStart records an incoming query and returns the completion
 // callback, to be deferred by the handler. The callback measures the
@@ -145,6 +152,8 @@ type Snapshot struct {
 	XfrInTotal      int64     `json:"xfr_in_total"`
 	NotifySent      int64     `json:"notify_sent"`
 	NotifyReceived  int64     `json:"notify_received"`
+	RRLDropped      int64     `json:"rrl_dropped"`
+	RRLTruncated    int64     `json:"rrl_truncated"`
 	P50LatencyMs    float64   `json:"p50_latency_ms"`
 	P95LatencyMs    float64   `json:"p95_latency_ms"`
 	P99LatencyMs    float64   `json:"p99_latency_ms"`
@@ -168,6 +177,8 @@ func (m *Metrics) Snapshot() Snapshot {
 		XfrInTotal:      m.xfrIn.Load(),
 		NotifySent:      m.notifySent.Load(),
 		NotifyReceived:  m.notifyRecv.Load(),
+		RRLDropped:      m.rrlDropped.Load(),
+		RRLTruncated:    m.rrlTruncated.Load(),
 		P50LatencyMs:    lp[0],
 		P95LatencyMs:    lp[1],
 		P99LatencyMs:    lp[2],

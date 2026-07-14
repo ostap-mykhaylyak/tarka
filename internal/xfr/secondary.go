@@ -213,11 +213,12 @@ func (mg *Manager) refresh(l *secLoop, st *secState) {
 
 // querySOA asks one primary for the zone serial (UDP, TCP fallback).
 func (mg *Manager) querySOA(apex, addr string) (uint32, error) {
-	msg := new(dns.Msg)
-	msg.SetQuestion(apex, dns.TypeSOA)
 	for _, network := range []string{"udp", "tcp"} {
-		c := &dns.Client{Net: network, Timeout: queryTimeout}
-		in, _, err := c.Exchange(msg.Copy(), addr)
+		msg := new(dns.Msg)
+		msg.SetQuestion(apex, dns.TypeSOA)
+		mg.signTSIG(msg)
+		c := &dns.Client{Net: network, Timeout: queryTimeout, TsigSecret: mg.tsig}
+		in, _, err := c.Exchange(msg, addr)
 		if err != nil {
 			continue
 		}
@@ -239,7 +240,8 @@ func (mg *Manager) querySOA(apex, addr string) (uint32, error) {
 func (mg *Manager) transferIn(apex, addr string) ([]dns.RR, error) {
 	msg := new(dns.Msg)
 	msg.SetAxfr(apex)
-	tr := &dns.Transfer{DialTimeout: queryTimeout, ReadTimeout: queryTimeout}
+	mg.signTSIG(msg)
+	tr := &dns.Transfer{DialTimeout: queryTimeout, ReadTimeout: queryTimeout, TsigSecret: mg.tsig}
 	env, err := tr.In(msg, addr)
 	if err != nil {
 		return nil, fmt.Errorf("axfr %s: %w", addr, err)

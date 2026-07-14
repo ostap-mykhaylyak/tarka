@@ -38,6 +38,7 @@ type Store struct {
 	files   map[string]*fileEntry // by base filename ("~"+apex for dynamic zones)
 	serials map[string]serialEntry
 	dns01   map[string][]dns01Entry // ephemeral ACME TXT overlay, by apex
+	alias   map[string][]dns.RR     // materialized ALIAS A/AAAA overlay, by apex
 	catalog *catalogSettings        // non-nil when publishing a catalog (primary side)
 	// catalogDirty is set by rebuildLocked when the catalog serial
 	// bumped; the caller fires OnLoad outside the lock so NOTIFY
@@ -85,6 +86,7 @@ func NewStore(dir, serialsPath string, log *slog.Logger) *Store {
 		files:       map[string]*fileEntry{},
 		serials:     map[string]serialEntry{},
 		dns01:       map[string][]dns01Entry{},
+		alias:       map[string][]dns.RR{},
 		now:         time.Now,
 	}
 	s.loadSerials()
@@ -342,6 +344,34 @@ func (s *Store) Find(qname string) *Zone {
 
 // Count returns the number of zones currently answering.
 func (s *Store) Count() int { return len(*s.zones.Load()) }
+
+// PrimaryStatus describes a served primary zone and the secondaries
+// that should be tracking it (the merged NOTIFY targets).
+type PrimaryStatus struct {
+	Apex        string
+	Serial      uint32
+	Secondaries []string // host:port
+}
+
+// PrimaryStatuses lists the served primary zones (catalog excluded)
+// with their current serial and secondary targets. The master-side
+// lag monitor probes these.
+func (s *Store) PrimaryStatuses() []PrimaryStatus {
+	zones := *s.zones.Load()
+	var out []PrimaryStatus
+	for _, z := range zones {
+		if z.Type != "primary" || z.synthetic || !z.loaded {
+			continue
+		}
+		out = append(out, PrimaryStatus{
+			Apex:        z.Name,
+			Serial:      z.Serial,
+			Secondaries: append([]string(nil), z.Transfer.Notify...),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Apex < out[j].Apex })
+	return out
+}
 
 // PrimaryZones returns the apexes (lowercase FQDN) of the loaded
 // primary zones, sorted. The ACME manager derives its certificate

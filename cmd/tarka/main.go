@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ostap-mykhaylyak/tarka/internal/acme"
+	"github.com/ostap-mykhaylyak/tarka/internal/alias"
 	"github.com/ostap-mykhaylyak/tarka/internal/bootstrap"
 	"github.com/ostap-mykhaylyak/tarka/internal/config"
 	"github.com/ostap-mykhaylyak/tarka/internal/geoip"
@@ -130,6 +131,9 @@ func runDaemon(cfgPath string) (err error) {
 	// are picked up.
 	zones := zone.NewStore(mgr.Get().Zones.Dir, paths.SerialsFile, logs.Service)
 	xfrMgr := xfr.NewManager(zones, m, logs.Xfr, paths.SecondaryDir, stop)
+	if t := mgr.Get().TSIG; t.Enabled() {
+		xfrMgr.SetTSIG(t.SecretMap(), t.KeyName(), t.AlgorithmFQDN())
+	}
 	zones.OnLoad = xfrMgr.ZoneLoaded
 	zones.OnRemove = xfrMgr.ZoneRemoved
 	// Catalog zones (RFC 9432): publish ours to the slaves — declared
@@ -148,6 +152,12 @@ func runDaemon(cfgPath string) (err error) {
 	}
 	// Drop expired ACME DNS-01 tokens left behind by a crashed hook.
 	zones.StartDNS01Sweeper(stop)
+	// Master-side lag monitor: track how far the secondaries trail.
+	xfrMgr.StartMonitor()
+
+	// ALIAS/ANAME flattening: resolve targets and materialize their
+	// A/AAAA into the zones, refreshed in the background.
+	alias.NewManager(mgr, zones, logs.Service).Start(stop)
 
 	// Built-in ACME client: obtains and renews the configured
 	// certificates, validating DNS-01 against itself.
@@ -172,7 +182,7 @@ func runDaemon(cfgPath string) (err error) {
 	// Local control socket: the IPC channel behind --status and the
 	// ACME dns01 hook commands. If it fails the daemon still serves;
 	// --status will report not running.
-	collect := status.NewCollector(version, mgr, zones, geo, acmeMgr, m, paths.LogDir)
+	collect := status.NewCollector(version, mgr, zones, geo, acmeMgr, xfrMgr, m, paths.LogDir)
 	statusSrv, err := status.Serve(paths.Socket, status.Handlers{
 		Status:     collect,
 		DNS01Set:   zones.SetDNS01,

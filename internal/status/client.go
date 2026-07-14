@@ -134,6 +134,9 @@ func print(snap *Snapshot, jsonOut bool, prev *Snapshot, elapsed time.Duration) 
 				snap.Live.XfrOutTotal, snap.Live.XfrInTotal,
 				snap.Live.NotifySent, snap.Live.NotifyReceived)
 		}
+		if snap.Live.RRLDropped+snap.Live.RRLTruncated > 0 {
+			fmt.Printf("rrl:      %d dropped, %d truncated\n", snap.Live.RRLDropped, snap.Live.RRLTruncated)
+		}
 		fmt.Printf("bytes:    %s out\n", humanBytes(snap.Live.BytesOutTotal))
 	}
 	if snap.GeoIP != nil && snap.GeoIP.Enabled {

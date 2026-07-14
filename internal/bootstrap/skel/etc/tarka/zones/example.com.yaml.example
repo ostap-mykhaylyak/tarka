@@ -35,6 +35,11 @@ records:
   #- {name: www,  type: A,    value: 198.51.100.10, geo: [EU]}
   #- {name: www,  type: A,    value: 192.0.2.10,    geo: [US, CA]}
 
+  # ALIAS/ANAME: point the apex (where CNAME is forbidden) at an
+  # external hostname; tarka resolves it and serves the A/AAAA,
+  # refreshed in the background.
+  #- {name: "@",  type: ALIAS, value: my-lb.provider.net.}
+
 # Zone transfers (type: primary only): serve AXFR to authorized
 # secondaries and send NOTIFY when the zone changes. Quote IPv6
 # addresses ("2001:db8::53"): YAML needs it. Targets take an optional

@@ -134,6 +134,18 @@ func Build(data []byte, file string, serialFor func(zoneName string) uint32) (*Z
 	z.add(z.soa, nil)
 
 	for i, rec := range fz.Records {
+		// ALIAS/ANAME is tarka-specific, not a wire type: record the
+		// target as metadata; the resolved A/AAAA are materialized by
+		// the alias manager (and only those are served/transferred).
+		if t := strings.ToUpper(rec.Type); t == "ALIAS" || t == "ANAME" {
+			owner, err := ownerName(rec.Name, apex)
+			if err != nil || rec.Value == "" {
+				warnings = append(warnings, fmt.Sprintf("records[%d]: skipping ALIAS: bad name or empty target", i))
+				continue
+			}
+			z.addAlias(owner, fqdn(rec.Value))
+			continue
+		}
 		rr, err := buildRR(rec, apex, defTTL)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("records[%d]: skipping: %v", i, err))
@@ -242,6 +254,19 @@ func (z *Zone) add(rr dns.RR, geo []string) {
 	}
 	t := rr.Header().Rrtype
 	z.names[name][t] = append(z.names[name][t], rrEntry{rr: rr, geo: geo})
+}
+
+// addAlias records an ALIAS target and makes the owner an existing
+// name (empty RRset) so, before the first resolution, other types
+// answer NODATA rather than NXDOMAIN.
+func (z *Zone) addAlias(owner, target string) {
+	if z.aliasTargets == nil {
+		z.aliasTargets = map[string]string{}
+	}
+	z.aliasTargets[owner] = target
+	if z.names[owner] == nil {
+		z.names[owner] = map[uint16][]rrEntry{}
+	}
 }
 
 // indexNonTerminals records every ancestor of an existing name (below

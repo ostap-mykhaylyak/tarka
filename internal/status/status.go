@@ -15,6 +15,7 @@ import (
 	"github.com/ostap-mykhaylyak/tarka/internal/acme"
 	"github.com/ostap-mykhaylyak/tarka/internal/config"
 	"github.com/ostap-mykhaylyak/tarka/internal/metrics"
+	"github.com/ostap-mykhaylyak/tarka/internal/xfr"
 	"github.com/ostap-mykhaylyak/tarka/internal/zone"
 )
 
@@ -36,6 +37,12 @@ type GeoIPProvider interface {
 // needs. May be nil (acme disabled).
 type AcmeProvider interface {
 	Snapshot() []acme.CertInfo
+}
+
+// LagProvider is the subset of the xfr manager the collector needs
+// for the secondary-lag view.
+type LagProvider interface {
+	LagSnapshot() []xfr.LagInfo
 }
 
 // Check statuses, ordered by severity. Exit codes follow the Nagios
@@ -97,16 +104,17 @@ type AcmeSection struct {
 // Snapshot is the full status document served over the socket.
 // Field names are stable across versions.
 type Snapshot struct {
-	Status    string            `json:"status"` // ok | warn | crit | unknown
-	Version   string            `json:"version"`
-	Service   ServiceInfo       `json:"service"`
-	Config    ConfigInfo        `json:"config"`
-	Zones     *ZonesSection     `json:"zones,omitempty"` // only when the daemon answered
-	GeoIP     *GeoIPSection     `json:"geoip,omitempty"` // only when enabled
-	Acme      *AcmeSection      `json:"acme,omitempty"`  // only when enabled
-	Checks    []Check           `json:"checks"`
-	Live      *metrics.Snapshot `json:"live,omitempty"` // only when the daemon answered
-	Timestamp time.Time         `json:"timestamp"`
+	Status      string            `json:"status"` // ok | warn | crit | unknown
+	Version     string            `json:"version"`
+	Service     ServiceInfo       `json:"service"`
+	Config      ConfigInfo        `json:"config"`
+	Zones       *ZonesSection     `json:"zones,omitempty"`       // only when the daemon answered
+	GeoIP       *GeoIPSection     `json:"geoip,omitempty"`       // only when enabled
+	Acme        *AcmeSection      `json:"acme,omitempty"`        // only when enabled
+	Secondaries []xfr.LagInfo     `json:"secondaries,omitempty"` // master-side lag view
+	Checks      []Check           `json:"checks"`
+	Live        *metrics.Snapshot `json:"live,omitempty"` // only when the daemon answered
+	Timestamp   time.Time         `json:"timestamp"`
 }
 
 // ExitCode maps the aggregate status onto the Nagios exit codes.
@@ -140,7 +148,7 @@ func worst(checks []Check) string {
 // NewCollector builds the snapshot function the daemon serves on the
 // socket. It computes the checks at request time from state the daemon
 // already holds. The zone store adds its own section when it lands.
-func NewCollector(version string, mgr *config.Manager, zones ZonesProvider, geo GeoIPProvider, acmeMgr AcmeProvider, m *metrics.Metrics, logDir string) func() *Snapshot {
+func NewCollector(version string, mgr *config.Manager, zones ZonesProvider, geo GeoIPProvider, acmeMgr AcmeProvider, lag LagProvider, m *metrics.Metrics, logDir string) func() *Snapshot {
 	start := time.Now()
 	return func() *Snapshot {
 		cfg := mgr.Get()
@@ -229,6 +237,32 @@ func NewCollector(version string, mgr *config.Manager, zones ZonesProvider, geo 
 			checks = append(checks, Check{"zones", Warn, "no zones loaded (answering REFUSED only)"})
 		default:
 			checks = append(checks, Check{"zones", OK, fmt.Sprintf("%d file(s), %d zone(s)", len(items), zones.Count())})
+		}
+
+		// Secondary-lag view (master side): unreachable or lagging
+		// slaves surface as WARN so the monitor catches a stuck
+		// transfer that the slave's own logs would hide.
+		if lag != nil {
+			if lags := lag.LagSnapshot(); len(lags) > 0 {
+				snap.Secondaries = lags
+				unreachable, behind := 0, 0
+				for _, l := range lags {
+					switch {
+					case !l.Reachable:
+						unreachable++
+					case l.Behind:
+						behind++
+					}
+				}
+				switch {
+				case unreachable > 0:
+					checks = append(checks, Check{"secondaries", Warn, fmt.Sprintf("%d secondary probe(s) unreachable", unreachable)})
+				case behind > 0:
+					checks = append(checks, Check{"secondaries", Warn, fmt.Sprintf("%d secondary/ies behind on serial", behind)})
+				default:
+					checks = append(checks, Check{"secondaries", OK, fmt.Sprintf("%d secondary probe(s) in sync", len(lags))})
+				}
+			}
 		}
 
 		live := m.Snapshot()

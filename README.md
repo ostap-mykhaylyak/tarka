@@ -26,6 +26,12 @@ answered with REFUSED.
 - GeoDNS: tag records with `geo: [IT, EU, ...]` (MaxMind
   GeoLite2-Country, hot-swapped) and clients get the nearest variant;
   EDNS Client Subnet is honored and echoed (RFC 7871)
+- ALIAS/ANAME at the apex: point `@` at an external hostname; tarka
+  resolves it and serves the flattened A/AAAA, refreshed in the
+  background and re-transferred to the secondaries on change
+- TSIG (RFC 8945) authenticating transfers and NOTIFY with a shared
+  cluster key; Response Rate Limiting on UDP against amplification;
+  master-side secondary-lag monitoring surfaced in `--status`
 - Built-in ACME client, fully automatic: every hosted zone gets a
   `zone + *.zone` certificate from Let's Encrypt / ZeroSSL / any
   RFC 8555 CA, obtained **and renewed** by tarka itself via its own
@@ -196,11 +202,32 @@ The same works in reverse: a tarka instance can be the secondary of a
 foreign primary (BIND, PowerDNS, a registrar's master) — only the
 three-line file is needed.
 
+### Authenticate the transfers (TSIG, recommended)
+
+IP ACLs are enough on a trusted network, but a shared TSIG key
+authenticates every AXFR and NOTIFY cryptographically. Put the **same**
+block in `config.yaml` on the primary and every secondary:
+
+```yaml
+tsig:
+  name: cluster
+  algorithm: hmac-sha256
+  secret: "PASTE-A-BASE64-SECRET"   # e.g. openssl rand -base64 32
+  require: true                     # refuse unsigned AXFR
+```
+
+Restart all nodes. The lag monitor, NOTIFY and both transfer
+directions sign automatically.
+
 ### Notes
 
 - Edit zones **only on the primary**; on the secondaries the YAML file
   is just the subscription, its content is ignored beyond
   `zone`/`type`/`primaries`.
+- On a public server, enable `rrl` (Response Rate Limiting) so tarka
+  cannot be abused as an amplification reflector.
+- `tarka --status` on the primary shows every secondary's serial and
+  flags one that is unreachable or lagging.
 - Enable ACME **on the primary only**: the challenge TXT records flow
   to the secondaries via the normal transfer (serial bump + NOTIFY),
   so the CA validates against any of the NS. The certificates are

@@ -58,8 +58,11 @@ type Zone struct {
 	nonTerminals map[string]bool
 	// allowNets is the precompiled transfer.allow ACL.
 	allowNets []netip.Prefix
-	hasGeo    bool
-	loaded    bool // false for a secondary zone not yet transferred
+	// aliasTargets maps an owner FQDN to the ALIAS/ANAME target whose
+	// A/AAAA the alias manager materializes into the zone.
+	aliasTargets map[string]string
+	hasGeo       bool
+	loaded       bool // false for a secondary zone not yet transferred
 	// synthetic marks zones tarka generates itself (the catalog):
 	// excluded from the ACME candidates.
 	synthetic bool
@@ -79,6 +82,19 @@ func (z *Zone) Loaded() bool { return z.loaded }
 // HasGeo reports whether any record carries geo tags, so the server
 // only pays for a GeoIP lookup when it can matter.
 func (z *Zone) HasGeo() bool { return z.hasGeo }
+
+// AliasTargets returns a copy of the owner->target ALIAS map (empty
+// when the zone has none). The alias manager resolves the targets.
+func (z *Zone) AliasTargets() map[string]string {
+	if len(z.aliasTargets) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(z.aliasTargets))
+	for k, v := range z.aliasTargets {
+		out[k] = v
+	}
+	return out
+}
 
 // SOARR returns a copy of the zone's SOA record.
 func (z *Zone) SOARR() dns.RR { return dns.Copy(z.soa) }

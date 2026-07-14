@@ -59,12 +59,89 @@ type Config struct {
 	Server  Server  `yaml:"server"`
 	Zones   Zones   `yaml:"zones"`
 	Catalog Catalog `yaml:"catalog"`
+	TSIG    TSIG    `yaml:"tsig"`
+	RRL     RRL     `yaml:"rrl"`
+	Alias   Alias   `yaml:"alias"`
 	GeoIP   GeoIP   `yaml:"geoip"`
 	Acme    Acme    `yaml:"acme"`
 
 	// Warnings collects non-fatal issues found by validate()
 	// (e.g. invalid list entries that were skipped). Never fatal.
 	Warnings []string `yaml:"-"`
+}
+
+// TSIG configures a shared transaction key (RFC 8945) authenticating
+// zone transfers and NOTIFY across the cluster. One key for the whole
+// deployment: distribute the same block to primary and secondaries.
+type TSIG struct {
+	// Name is the key name (any label, must match on both ends).
+	Name string `yaml:"name"`
+	// Algorithm: hmac-sha256 (default), hmac-sha512, hmac-sha1.
+	Algorithm string `yaml:"algorithm"`
+	// Secret is the base64 HMAC key.
+	Secret string `yaml:"secret"`
+	// Require refuses unsigned (or wrongly signed) AXFR even from an
+	// allowed IP. Off by default so a mixed cluster still works.
+	Require bool `yaml:"require"`
+}
+
+// Enabled reports whether a usable key is configured.
+func (t TSIG) Enabled() bool { return t.Name != "" && t.Secret != "" }
+
+// KeyName is the canonical (lowercase FQDN) TSIG key name.
+func (t TSIG) KeyName() string {
+	name := strings.ToLower(t.Name)
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
+	return name
+}
+
+// AlgorithmFQDN is the miekg/dns algorithm identifier (trailing dot).
+func (t TSIG) AlgorithmFQDN() string { return t.Algorithm + "." }
+
+// SecretMap is the {keyname: secret} map for dns.Server / dns.Client
+// / dns.Transfer, or nil when no key is configured.
+func (t TSIG) SecretMap() map[string]string {
+	if !t.Enabled() {
+		return nil
+	}
+	return map[string]string{t.KeyName(): t.Secret}
+}
+
+// RRL configures Response Rate Limiting (anti amplification). It only
+// touches UDP: an authoritative server on UDP is a reflection vector,
+// so identical responses to one client subnet are capped. TCP and
+// zone transfers are never limited.
+type RRL struct {
+	Enabled bool `yaml:"enabled"`
+	// ResponsesPerSecond is the sustained cap per client subnet +
+	// response category.
+	ResponsesPerSecond int `yaml:"responses_per_second"`
+	// Window is how long a bucket accumulates its allowance.
+	Window Duration `yaml:"window"`
+	// Slip: every Nth throttled response is sent truncated (TC=1)
+	// instead of dropped, so a legitimate client behind the subnet
+	// retries over TCP. 0 drops everything, 1 truncates everything.
+	Slip int `yaml:"slip"`
+	// IPv4Prefix / IPv6Prefix aggregate clients into subnets: a whole
+	// spoofed range shares one bucket.
+	IPv4Prefix int `yaml:"ipv4_prefix"`
+	IPv6Prefix int `yaml:"ipv6_prefix"`
+}
+
+// Alias configures ALIAS/ANAME flattening. An ALIAS record at a name
+// (the zone apex, where CNAME is forbidden, or anywhere) is resolved
+// to the target's A/AAAA and served as if they were local records —
+// kept fresh in the background and re-transferred to the secondaries
+// on change.
+type Alias struct {
+	// Resolvers are the recursive resolvers used to resolve targets.
+	Resolvers []string `yaml:"resolvers"`
+	// Refresh is how often the targets are re-resolved.
+	Refresh Duration `yaml:"refresh"`
+	// TTL is the TTL of the synthesized A/AAAA records.
+	TTL Duration `yaml:"ttl"`
 }
 
 // Server holds the DNS listeners and wire-level behavior.
@@ -171,6 +248,22 @@ func Default() *Config {
 			Zone:            "catalog.tarka.",
 			AutoSecondaries: true,
 		},
+		TSIG: TSIG{
+			Algorithm: "hmac-sha256",
+		},
+		RRL: RRL{
+			Enabled:            false,
+			ResponsesPerSecond: 15,
+			Window:             Duration(15 * time.Second),
+			Slip:               2,
+			IPv4Prefix:         24,
+			IPv6Prefix:         56,
+		},
+		Alias: Alias{
+			Resolvers: []string{"1.1.1.1:53", "8.8.8.8:53"},
+			Refresh:   Duration(5 * time.Minute),
+			TTL:       Duration(5 * time.Minute),
+		},
 		GeoIP: GeoIP{
 			Enabled:   false,
 			CountryDB: "/usr/share/GeoIP/GeoLite2-Country.mmdb",
@@ -231,6 +324,57 @@ func (c *Config) validate() error {
 
 	if c.Zones.Dir == "" {
 		return fmt.Errorf("zones.dir is required")
+	}
+
+	if c.TSIG.Name != "" || c.TSIG.Secret != "" {
+		if c.TSIG.Name == "" || c.TSIG.Secret == "" {
+			return fmt.Errorf("tsig needs both name and secret")
+		}
+		switch c.TSIG.Algorithm {
+		case "hmac-sha256", "hmac-sha512", "hmac-sha1":
+		default:
+			return fmt.Errorf("tsig.algorithm must be hmac-sha256, hmac-sha512 or hmac-sha1, got %q", c.TSIG.Algorithm)
+		}
+		if _, err := base64.StdEncoding.DecodeString(c.TSIG.Secret); err != nil {
+			return fmt.Errorf("tsig.secret must be base64: %w", err)
+		}
+	} else if c.TSIG.Require {
+		return fmt.Errorf("tsig.require needs a configured key")
+	}
+
+	if c.RRL.Enabled {
+		if c.RRL.ResponsesPerSecond < 1 {
+			return fmt.Errorf("rrl.responses_per_second must be >= 1")
+		}
+		if c.RRL.Window.Std() <= 0 {
+			return fmt.Errorf("rrl.window must be positive")
+		}
+		if c.RRL.Slip < 0 {
+			return fmt.Errorf("rrl.slip must be >= 0")
+		}
+		if c.RRL.IPv4Prefix < 1 || c.RRL.IPv4Prefix > 32 {
+			return fmt.Errorf("rrl.ipv4_prefix must be between 1 and 32")
+		}
+		if c.RRL.IPv6Prefix < 1 || c.RRL.IPv6Prefix > 128 {
+			return fmt.Errorf("rrl.ipv6_prefix must be between 1 and 128")
+		}
+	}
+
+	// Alias resolvers: invalid entries skipped with a warning.
+	aliasValid := c.Alias.Resolvers[:0]
+	for _, r := range c.Alias.Resolvers {
+		if _, _, err := net.SplitHostPort(r); err != nil {
+			c.Warnings = append(c.Warnings, fmt.Sprintf("alias.resolvers: skipping invalid address %q", r))
+			continue
+		}
+		aliasValid = append(aliasValid, r)
+	}
+	c.Alias.Resolvers = aliasValid
+	if c.Alias.Refresh.Std() <= 0 {
+		return fmt.Errorf("alias.refresh must be positive")
+	}
+	if c.Alias.TTL.Std() <= 0 {
+		return fmt.Errorf("alias.ttl must be positive")
 	}
 
 	if c.GeoIP.Enabled && c.GeoIP.CountryDB == "" {

@@ -16,9 +16,25 @@ func (s *Server) answerTransfer(w dns.ResponseWriter, r *dns.Msg, m *dns.Msg,
 	client := remoteIP(w)
 	z := s.zones.Find(qname)
 
+	// TSIG gate: a signed request with a bad signature is always
+	// refused; an unsigned one only when tsig.require is set.
+	tsigOK := true
+	if s.tsig != nil {
+		if t := r.IsTsig(); t != nil {
+			tsigOK = w.TsigStatus() == nil
+		} else if s.tsigReq {
+			tsigOK = false
+		}
+	}
+
 	switch {
 	case z == nil || z.Name != qname:
 		// Transfers are only served at the apex of a hosted zone.
+		m.SetRcode(r, dns.RcodeRefused)
+		return false
+	case !tsigOK:
+		s.xlog.Warn("transfer refused: TSIG",
+			"zone", qname, "client", client.String())
 		m.SetRcode(r, dns.RcodeRefused)
 		return false
 	case !z.TransferAllowed(client):
@@ -47,7 +63,7 @@ func (s *Server) answerTransfer(w dns.ResponseWriter, r *dns.Msg, m *dns.Msg,
 	// Full zone over TCP. tarka keeps no incremental history, so an
 	// IXFR is answered AXFR-style (RFC 1995 allows this fallback).
 	rrs := z.TransferRecords()
-	tr := new(dns.Transfer)
+	tr := &dns.Transfer{TsigSecret: s.tsig} // Out signs when r was signed
 	ch := make(chan *dns.Envelope, 1)
 	ch <- &dns.Envelope{RR: rrs}
 	close(ch)

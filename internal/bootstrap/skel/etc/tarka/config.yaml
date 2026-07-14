@@ -44,6 +44,39 @@ catalog:
   secondaries: []            # primary side, extra slaves, e.g. [203.0.113.2]
   primaries: []              # secondary side, e.g. [198.51.100.1]
 
+tsig:
+  # Shared transaction key (RFC 8945) authenticating zone transfers and
+  # NOTIFY across the cluster. One key for the whole deployment: put the
+  # SAME block on the primary and every secondary. Generate a secret
+  # with e.g. `tsig-keygen` or `openssl rand -base64 32`. Empty = off
+  # (transfers gated by IP ACL only). Enabling requires a restart.
+  name: ""                   # any label, must match on both ends
+  algorithm: hmac-sha256     # hmac-sha256 | hmac-sha512 | hmac-sha1
+  secret: ""                 # base64 HMAC key
+  require: false             # refuse unsigned AXFR even from allowed IPs
+
+rrl:
+  # Response Rate Limiting: the standard defense against being used as
+  # a DNS amplification reflector. Only UDP is limited (TCP is not
+  # spoofable). Over the per-subnet cap a response is dropped, or —
+  # every slip-th time — sent truncated so a real client retries over
+  # TCP. Enabling requires a restart.
+  enabled: false
+  responses_per_second: 15
+  window: 15s
+  slip: 2                    # 0 = drop all, 1 = truncate all, N = truncate every Nth
+  ipv4_prefix: 24            # clients aggregated into subnets of this size
+  ipv6_prefix: 56
+
+alias:
+  # ALIAS/ANAME flattening: an ALIAS record (usable at the apex, where
+  # CNAME is forbidden) is resolved to the target's A/AAAA and served
+  # as local records, refreshed in the background and re-transferred to
+  # the secondaries on change.
+  resolvers: ["1.1.1.1:53", "8.8.8.8:53"]
+  refresh: 5m
+  ttl: 5m
+
 geoip:
   # MaxMind GeoLite2 country database, used by the geo: field of zone
   # records (GeoDNS). Install geoipupdate to keep it fresh; tarka

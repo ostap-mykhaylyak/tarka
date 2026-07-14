@@ -207,16 +207,16 @@ func (s *Store) dns01ApplyLocked(apex string) *Zone {
 	return (*s.zones.Load())[apex]
 }
 
-// overlayRRsLocked renders the active overlay of a zone as TXT
-// records. Callers hold s.mu.
+// overlayRRsLocked renders the active overlay of a zone: the ACME
+// DNS-01 challenge TXTs plus the materialized ALIAS A/AAAA records.
+// Callers hold s.mu.
 func (s *Store) overlayRRsLocked(z *Zone) []dns.RR {
 	if z.Type != "primary" || !z.loaded {
 		return nil
 	}
-	entries := s.dns01[z.Name]
 	now := s.now()
 	var out []dns.RR
-	for _, e := range entries {
+	for _, e := range s.dns01[z.Name] {
 		if now.After(e.expires) {
 			continue
 		}
@@ -225,5 +225,6 @@ func (s *Store) overlayRRsLocked(z *Zone) []dns.RR {
 			Txt: []string{e.token},
 		})
 	}
+	out = append(out, s.alias[z.Name]...)
 	return out
 }

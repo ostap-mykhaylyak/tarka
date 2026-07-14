@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/ostap-mykhaylyak/tarka/internal/rrl"
 	"github.com/ostap-mykhaylyak/tarka/internal/zone"
 )
 
@@ -92,6 +93,34 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	m.Truncate(size)
 
+	// Response Rate Limiting (UDP only): cap identical responses per
+	// client subnet to defuse amplification. Opcode/NOTIFY replies are
+	// unaffected; a flood of one answer to a spoofed range is dropped
+	// (or, on the slip cycle, truncated so a real client retries over
+	// TCP).
+	if s.rrl != nil && proto == "udp" && r.Opcode == dns.OpcodeQuery {
+		switch s.rrl.Check(remoteIP(w), rrlCategory(qname, qtype, m.Rcode)) {
+		case rrl.Drop:
+			s.m.RRLDropped()
+			s.qlog.Info("rate limited", "client", remoteIP(w).String(),
+				"qname", qname, "qtype", dns.TypeToString[qtype], "action", "dropped")
+			done(0, m.Rcode)
+			return // send nothing
+		case rrl.Truncate:
+			s.m.RRLTruncated()
+			m.Answer, m.Ns, m.Extra = nil, nil, nil
+			m.Truncated = true
+		}
+	}
+
+	// Sign the response when the request carried a valid TSIG (zone
+	// transfers, signed NOTIFY): use the same key it was signed with.
+	if s.tsig != nil {
+		if t := r.IsTsig(); t != nil && w.TsigStatus() == nil {
+			m.SetTsig(t.Hdr.Name, t.Algorithm, 300, time.Now().Unix())
+		}
+	}
+
 	w.WriteMsg(m)
 	done(int64(m.Len()), m.Rcode)
 
@@ -108,6 +137,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		"answers", len(m.Answer),
 		"tc", m.Truncated,
 		"latency_ms", float64(time.Since(t0))/float64(time.Millisecond))
+}
+
+// rrlCategory groups equivalent responses so a flood of one answer is
+// limited on its own account.
+func rrlCategory(qname string, qtype uint16, rcode int) string {
+	return qname + "|" + dns.TypeToString[qtype] + "|" + dns.RcodeToString[rcode]
 }
 
 // rfc8482 is the conventional minimal answer to ANY queries.

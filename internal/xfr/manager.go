@@ -37,9 +37,15 @@ type Manager struct {
 	catalogApex      string
 	catalogPrimaries []string
 
+	// TSIG (shared cluster key) signs SOA polls, AXFR in and NOTIFY.
+	tsig    map[string]string
+	tsigKey string
+	tsigAlg string
+
 	mu       sync.Mutex
 	loops    map[string]*secLoop
 	notified map[string]uint32 // last NOTIFY-ed serial per primary zone
+	lag      map[string]LagInfo
 }
 
 // NewManager wires the transfer manager. Hook ZoneLoaded/ZoneRemoved
@@ -53,6 +59,21 @@ func NewManager(store *zone.Store, m *metrics.Metrics, log *slog.Logger, dir str
 		stop:     stop,
 		loops:    map[string]*secLoop{},
 		notified: map[string]uint32{},
+		lag:      map[string]LagInfo{},
+	}
+}
+
+// SetTSIG installs the shared transaction key used to sign the
+// secondary-side SOA polls, AXFR in and NOTIFY, and the master-side
+// lag probes. Call before Start.
+func (mg *Manager) SetTSIG(secret map[string]string, keyName, algFQDN string) {
+	mg.tsig, mg.tsigKey, mg.tsigAlg = secret, keyName, algFQDN
+}
+
+// signTSIG stamps a message with the shared key when configured.
+func (mg *Manager) signTSIG(msg *dns.Msg) {
+	if mg.tsig != nil {
+		msg.SetTsig(mg.tsigKey, mg.tsigAlg, 300, time.Now().Unix())
 	}
 }
 
@@ -148,16 +169,17 @@ func (mg *Manager) maybeNotify(z *zone.Zone) {
 		return
 	}
 
-	msg := new(dns.Msg)
-	msg.SetNotify(z.Name)
-	msg.Answer = []dns.RR{z.SOARR()} // current SOA hint (RFC 1996 §3.7)
 	for _, target := range z.Transfer.Notify {
-		go mg.sendNotify(z.Name, z.Serial, msg.Copy(), hostPort(target))
+		go mg.sendNotify(z.Name, z.Serial, z.SOARR(), hostPort(target))
 	}
 }
 
-func (mg *Manager) sendNotify(apex string, serial uint32, msg *dns.Msg, addr string) {
-	c := &dns.Client{Net: "udp", Timeout: queryTimeout}
+func (mg *Manager) sendNotify(apex string, serial uint32, soa dns.RR, addr string) {
+	msg := new(dns.Msg)
+	msg.SetNotify(apex)
+	msg.Answer = []dns.RR{soa} // current SOA hint (RFC 1996 §3.7)
+	mg.signTSIG(msg)           // sign per message: TSIG is not copyable
+	c := &dns.Client{Net: "udp", Timeout: queryTimeout, TsigSecret: mg.tsig}
 	in, _, err := c.Exchange(msg, addr)
 	if err != nil {
 		mg.log.Warn("notify send failed", "zone", apex, "target", addr, "error", err)
