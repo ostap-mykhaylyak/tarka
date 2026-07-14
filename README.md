@@ -123,7 +123,27 @@ server:
 ## Primary + secondary (transfers, NOTIFY)
 
 A **primary** serves the zone and feeds secondaries via AXFR, sending
-NOTIFY on every change. Declare who may transfer in the zone file:
+NOTIFY on every change. A **secondary** pulls it and re-checks on
+NOTIFY and on the SOA `refresh`/`retry`/`expire` timers.
+
+### Who may transfer — three places, from global to per-zone
+
+You almost never need to write this per zone. Pick the broadest that
+fits:
+
+| Where | Scope | Use it when |
+|---|---|---|
+| `catalog.auto_secondaries: true` (default) | every zone, automatically | the secondary is already an `NS` of the zone (with glue) — nothing to configure |
+| `catalog.secondaries: [IP]` in `config.yaml` | every zone | a global slave that is **not** in the NS records (e.g. a hidden backup) |
+| `transfer:` in a zone file | that one zone | an exception: a slave that should get only this zone |
+
+Because the default `auto_secondaries` derives the allow-list and the
+NOTIFY targets from each zone's own NS glue, a normal setup needs **no
+`transfer:` block and no slave list at all** — listing the
+nameservers in the zone is enough. See
+[Catalog zones](#catalog-zones--zero-config-secondaries).
+
+The explicit per-zone form is still there for exceptions:
 
 ```yaml
 # /etc/tarka/zones/example.com.yaml (primary)
@@ -137,9 +157,18 @@ records:
   - {name: ns2,  type: A,  value: 203.0.113.2}     # the secondary
   - {name: www,  type: A,  value: 198.51.100.10}
 
+# Optional — only if you are NOT using the catalog for this zone:
 transfer:
   allow:  [203.0.113.2]          # IPs/CIDRs allowed to AXFR this zone
   notify: [203.0.113.2]          # NOTIFY targets on change (optional :port)
+```
+
+The global equivalent, applied to **every** primary zone at once:
+
+```yaml
+# /etc/tarka/config.yaml — one line instead of a transfer: block per zone
+catalog:
+  secondaries: [203.0.113.2]
 ```
 
 A **secondary** needs only a three-line file — the body comes over the
@@ -156,8 +185,8 @@ primaries: [198.51.100.1]
 
 This is plain AXFR/NOTIFY, so tarka can slave from — or feed — BIND,
 PowerDNS, or a registrar's DNS. But if both ends are tarka, prefer the
-catalog below and skip the per-zone `transfer:` and secondary files
-entirely.
+[catalog](#catalog-zones--zero-config-secondaries) and skip the
+per-zone `transfer:` and secondary files entirely.
 
 ---
 
