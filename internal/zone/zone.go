@@ -60,6 +60,9 @@ type Zone struct {
 	allowNets []netip.Prefix
 	hasGeo    bool
 	loaded    bool // false for a secondary zone not yet transferred
+	// synthetic marks zones tarka generates itself (the catalog):
+	// excluded from the ACME candidates.
+	synthetic bool
 }
 
 // Transfer is the per-zone transfer policy (primary zones).
@@ -163,6 +166,23 @@ func (z *Zone) WithOverlay(serial uint32, extra []dns.RR) *Zone {
 	nz.indexNonTerminals()
 	nz.loaded = true
 	return nz
+}
+
+// withExtraTransfer returns a shallow copy whose transfer ACL and
+// NOTIFY fan-out include the catalog secondaries (the record maps are
+// shared: they are immutable after build).
+func (z *Zone) withExtraTransfer(nets []netip.Prefix, notify []string) *Zone {
+	nz := *z
+	nz.allowNets = append(append([]netip.Prefix(nil), z.allowNets...), nets...)
+	seen := map[string]bool{}
+	nz.Transfer.Notify = nil
+	for _, t := range append(append([]string(nil), z.Transfer.Notify...), notify...) {
+		if !seen[t] {
+			seen[t] = true
+			nz.Transfer.Notify = append(nz.Transfer.Notify, t)
+		}
+	}
+	return &nz
 }
 
 // cloneMeta copies the zone identity and policy, with empty data.

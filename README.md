@@ -19,6 +19,9 @@ answered with REFUSED.
 - Secondary mode: AXFR in from external primaries with SOA
   refresh/retry/expire timers; the transferred copy is persisted so a
   restart resumes from the last good zone
+- Catalog zones (RFC 9432): declare the slaves once on the primary
+  and they provision every hosted zone automatically — a secondary
+  needs zero zone files, and new zones propagate on the spot
 - GeoDNS: tag records with `geo: [IT, EU, ...]` (MaxMind
   GeoLite2-Country, hot-swapped) and clients get the nearest variant;
   EDNS Client Subnet is honored and echoed (RFC 7871)
@@ -109,9 +112,36 @@ transfer:
 
 No restart needed: the file is hot-loaded on save.
 
-### 3. On the SECONDARY — a three-line zone file
+### 3. On the SECONDARY — zero zone files (catalog)
 
-`/etc/tarka/zones/example.com.yaml`:
+The secondary needs no zone files at all. In
+`/etc/tarka/config.yaml`:
+
+```yaml
+catalog:
+  primaries: [198.51.100.1]
+```
+
+and on the **primary**, declare the slave once (also in
+`config.yaml` — this replaces the per-zone `transfer:` section of
+step 2, which becomes optional):
+
+```yaml
+catalog:
+  secondaries: [203.0.113.2]
+```
+
+That's it (restart both after the config change). The primary
+publishes a catalog zone (RFC 9432) listing every zone it hosts; the
+secondary subscribes to it and provisions each member automatically:
+add a zone file on the primary and the slave picks it up on the spot
+(NOTIFY-driven), delete it and the slave drops it. Every hosted zone
+is transferable by the declared slaves with no per-zone
+`transfer.allow`.
+
+Alternatively, the manual per-zone way — a three-line file on the
+secondary — still works, and is the way to slave zones from a
+non-tarka master (BIND, PowerDNS, a registrar):
 
 ```yaml
 zone: example.com
@@ -119,11 +149,11 @@ type: secondary
 primaries: [198.51.100.1]
 ```
 
-The zone body lives only on the primary. On save, the secondary
-transfers immediately (and re-checks at the SOA `refresh` interval, on
-every NOTIFY, and after the `retry`/`expire` timers on failures). The
-transferred copy is persisted under `/var/log/tarka/secondary/`, so a
-reboot serves instantly even if the primary is down.
+Either way, the zone body lives only on the primary. The secondary
+transfers immediately, re-checks at the SOA `refresh` interval, on
+every NOTIFY, and after the `retry`/`expire` timers on failures. The
+transferred copies are persisted under `/var/log/tarka/secondary/`,
+so a reboot serves instantly even if the primary is down.
 
 ### 4. Verify
 
@@ -149,13 +179,14 @@ Point the domain's NS records at ALL the nameservers (`ns1` and
 
 ### 6. Adding another secondary (ns3, 192.0.2.3)
 
-1. On **ns3**: install tarka, drop the same three-line secondary file
-   (with `primaries: [198.51.100.1]`).
-2. On the **primary**: add `192.0.2.3` to `transfer.allow` and
-   `transfer.notify`, and add the NS + glue records
+1. On **ns3**: install tarka, set `catalog.primaries:
+   [198.51.100.1]` in its config — done, every zone arrives by
+   itself.
+2. On the **primary**: add `192.0.2.3` to `catalog.secondaries`
+   (restart), and add the NS + glue records to the zones
    (`{name: "@", type: NS, value: ns3.example.com.}`,
-   `{name: ns3, type: A, value: 192.0.2.3}`). Save — hot-reloaded,
-   serial bumps, everyone gets NOTIFY.
+   `{name: ns3, type: A, value: 192.0.2.3}`) — hot-reloaded, serial
+   bumps, everyone gets NOTIFY.
 3. At the registrar: add the `ns3` NS/host record.
 
 The same works in reverse: a tarka instance can be the secondary of a

@@ -31,6 +31,12 @@ type Manager struct {
 	dir   string // persisted secondary copies
 	stop  <-chan struct{}
 
+	// Catalog subscription (secondary side): the catalog zone is a
+	// dynamic secondary; every transferred copy is parsed and the
+	// member zones are provisioned/removed accordingly.
+	catalogApex      string
+	catalogPrimaries []string
+
 	mu       sync.Mutex
 	loops    map[string]*secLoop
 	notified map[string]uint32 // last NOTIFY-ed serial per primary zone
@@ -47,6 +53,36 @@ func NewManager(store *zone.Store, m *metrics.Metrics, log *slog.Logger, dir str
 		stop:     stop,
 		loops:    map[string]*secLoop{},
 		notified: map[string]uint32{},
+	}
+}
+
+// SubscribeCatalog provisions the catalog zone of the given masters
+// as a dynamic secondary (no YAML file) and keeps the member zones in
+// sync with every transferred copy. Call after the store hooks are in
+// place.
+func (mg *Manager) SubscribeCatalog(catalogZone string, primaries []string) {
+	mg.catalogApex = strings.ToLower(dns.Fqdn(catalogZone))
+	mg.catalogPrimaries = primaries
+	mg.store.AddDynamicSecondary(mg.catalogApex, primaries)
+}
+
+// syncCatalog reconciles the provisioned member zones with a freshly
+// transferred (or resumed) catalog copy.
+func (mg *Manager) syncCatalog(rrs []dns.RR) {
+	members, versionOK := zone.CatalogMembers(mg.catalogApex, rrs)
+	if !versionOK {
+		mg.log.Error("catalog version not supported, ignoring", "zone", mg.catalogApex)
+		return
+	}
+	want := map[string]bool{}
+	for _, member := range members {
+		want[member] = true
+		mg.store.AddDynamicSecondary(member, mg.catalogPrimaries)
+	}
+	for _, existing := range mg.store.DynamicSecondaries() {
+		if existing != mg.catalogApex && !want[existing] {
+			mg.store.RemoveDynamicSecondary(existing)
+		}
 	}
 }
 
@@ -76,8 +112,15 @@ func (mg *Manager) ZoneRemoved(apex string) {
 func (mg *Manager) HandleNotify(apex string, from netip.Addr) int {
 	mg.mu.Lock()
 	l, ok := mg.loops[apex]
+	catLoop := mg.loops[mg.catalogApex]
 	mg.mu.Unlock()
 	if !ok {
+		// A NOTIFY for a zone we do not know yet, from a catalog
+		// master: the catalog is probably ahead of us — refresh it.
+		if catLoop != nil && catLoop.fromPrimary(from) {
+			mg.log.Info("notify for unknown zone, refreshing catalog", "zone", apex, "client", from.String())
+			catLoop.wake()
+		}
 		return dns.RcodeRefused
 	}
 	if !l.fromPrimary(from) {

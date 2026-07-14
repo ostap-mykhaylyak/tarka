@@ -56,10 +56,11 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 // Config is the global configuration. Every field has a production
 // default (see Default), so the operator's config.yaml may be sparse.
 type Config struct {
-	Server Server `yaml:"server"`
-	Zones  Zones  `yaml:"zones"`
-	GeoIP  GeoIP  `yaml:"geoip"`
-	Acme   Acme   `yaml:"acme"`
+	Server  Server  `yaml:"server"`
+	Zones   Zones   `yaml:"zones"`
+	Catalog Catalog `yaml:"catalog"`
+	GeoIP   GeoIP   `yaml:"geoip"`
+	Acme    Acme    `yaml:"acme"`
 
 	// Warnings collects non-fatal issues found by validate()
 	// (e.g. invalid list entries that were skipped). Never fatal.
@@ -84,6 +85,24 @@ type Server struct {
 // Zones locates the per-zone YAML files.
 type Zones struct {
 	Dir string `yaml:"dir"`
+}
+
+// Catalog configures catalog zones (RFC 9432): the primary publishes
+// a special zone listing every zone it hosts; a secondary subscribes
+// to it and provisions the member zones automatically — no per-zone
+// YAML files on the secondaries.
+type Catalog struct {
+	// Zone is the catalog zone name; primary and secondaries must
+	// agree on it. It is never part of the public DNS tree.
+	Zone string `yaml:"zone"`
+	// Secondaries (PRIMARY side) declares the slaves once: they may
+	// transfer the catalog and every hosted zone, and receive NOTIFY
+	// for all of them. Entries are IP or IP:port.
+	Secondaries []string `yaml:"secondaries"`
+	// Primaries (SECONDARY side) subscribes to the catalog of these
+	// masters and auto-provisions their zones. Entries are IP or
+	// IP:port.
+	Primaries []string `yaml:"primaries"`
 }
 
 // GeoIP configures MaxMind country lookups, consumed by the geo:
@@ -142,6 +161,9 @@ func Default() *Config {
 		},
 		Zones: Zones{
 			Dir: paths.ZonesDir,
+		},
+		Catalog: Catalog{
+			Zone: "catalog.tarka.",
 		},
 		GeoIP: GeoIP{
 			Enabled:   false,
@@ -207,6 +229,27 @@ func (c *Config) validate() error {
 
 	if c.GeoIP.Enabled && c.GeoIP.CountryDB == "" {
 		return fmt.Errorf("geoip.country_db is required when geoip.enabled is true")
+	}
+
+	if len(c.Catalog.Secondaries) > 0 || len(c.Catalog.Primaries) > 0 {
+		if c.Catalog.Zone == "" {
+			return fmt.Errorf("catalog.zone is required when the catalog is in use")
+		}
+		// Secondaries must carry a usable IP (it doubles as the
+		// transfer ACL); invalid entries are skipped with a warning.
+		valid := c.Catalog.Secondaries[:0]
+		for _, e := range c.Catalog.Secondaries {
+			host := e
+			if h, _, err := net.SplitHostPort(e); err == nil {
+				host = h
+			}
+			if net.ParseIP(host) == nil {
+				c.Warnings = append(c.Warnings, fmt.Sprintf("catalog.secondaries: skipping invalid entry %q", e))
+				continue
+			}
+			valid = append(valid, e)
+		}
+		c.Catalog.Secondaries = valid
 	}
 
 	if c.Acme.Enabled {

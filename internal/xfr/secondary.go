@@ -100,6 +100,11 @@ func (mg *Manager) run(l *secLoop) {
 		st.rrs, st.soa, st.lastGood = rrs, findSOA(rrs), mtime
 		mg.log.Info("resumed persisted zone", "zone", l.apex,
 			"serial", soaSerial(st.soa), "age", time.Since(mtime).Round(time.Second).String())
+		if l.apex == mg.catalogApex {
+			// Re-provision the member zones before any network: their
+			// own persisted copies then resume the same way.
+			mg.syncCatalog(rrs)
+		}
 	}
 
 	for {
@@ -193,6 +198,9 @@ func (mg *Manager) refresh(l *secLoop, st *secState) {
 		mg.m.XfrIn()
 		mg.log.Info("zone transferred", "zone", l.apex, "primary", addr,
 			"serial", soaSerial(st.soa), "records", len(rrs))
+		if l.apex == mg.catalogApex {
+			mg.syncCatalog(rrs)
+		}
 		return
 	}
 

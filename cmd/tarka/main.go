@@ -130,7 +130,15 @@ func runDaemon(cfgPath string) (err error) {
 	xfrMgr := xfr.NewManager(zones, m, logs.Xfr, paths.SecondaryDir, stop)
 	zones.OnLoad = xfrMgr.ZoneLoaded
 	zones.OnRemove = xfrMgr.ZoneRemoved
+	// Catalog zones (RFC 9432): publish ours to the declared slaves
+	// and/or subscribe to a master's, auto-provisioning its zones.
+	if cat := mgr.Get().Catalog; len(cat.Secondaries) > 0 {
+		zones.SetCatalog(cat.Zone, cat.Secondaries)
+	}
 	zones.LoadAll()
+	if cat := mgr.Get().Catalog; len(cat.Primaries) > 0 {
+		xfrMgr.SubscribeCatalog(cat.Zone, cat.Primaries)
+	}
 	if err := zones.Watch(stop); err != nil {
 		return err
 	}

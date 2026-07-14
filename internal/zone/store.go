@@ -33,10 +33,15 @@ type Store struct {
 	OnRemove func(apex string)
 
 	mu      sync.Mutex
-	files   map[string]*fileEntry // by base filename
+	files   map[string]*fileEntry // by base filename ("~"+apex for dynamic zones)
 	serials map[string]serialEntry
 	dns01   map[string][]dns01Entry // ephemeral ACME TXT overlay, by apex
-	now     func() time.Time        // test override
+	catalog *catalogSettings        // non-nil when publishing a catalog (primary side)
+	// catalogDirty is set by rebuildLocked when the catalog serial
+	// bumped; the caller fires OnLoad outside the lock so NOTIFY
+	// reaches the secondaries.
+	catalogDirty bool
+	now          func() time.Time // test override
 
 	// zones is the lookup table (apex -> Zone), rebuilt on every
 	// change and swapped atomically: Find is hot-path cheap.
@@ -151,6 +156,7 @@ func (s *Store) LoadFile(path string) {
 	if s.OnLoad != nil {
 		s.OnLoad(z)
 	}
+	s.notifyCatalogChange()
 }
 
 // RemoveFile unloads the zone of a deleted file.
@@ -167,6 +173,7 @@ func (s *Store) RemoveFile(path string) {
 			s.OnRemove(entry.zone.Name)
 		}
 	}
+	s.notifyCatalogChange()
 }
 
 // SetSecondaryData installs transferred records into the secondary
@@ -227,10 +234,12 @@ func (s *Store) setError(base, msg string) {
 
 // rebuildLocked recomputes the apex lookup table. Two files claiming
 // the same zone: the first in filename order wins, the other is
-// flagged. The ephemeral DNS-01 overlay is applied here, on top of
-// the immutable per-file zones. Callers hold s.mu.
+// flagged. The ephemeral DNS-01 overlay and the catalog (merged
+// transfer ACL + the synthesized catalog zone itself) are applied
+// here, on top of the immutable per-file zones. Callers hold s.mu.
 func (s *Store) rebuildLocked() {
 	zones := map[string]*Zone{}
+	var members []string
 	for _, base := range sortedFilesLocked(s.files) {
 		entry := s.files[base]
 		if entry.zone == nil {
@@ -245,9 +254,38 @@ func (s *Store) rebuildLocked() {
 		if txt := s.overlayRRsLocked(z); len(txt) > 0 {
 			z = z.WithOverlay(s.serials[z.Name].Serial, txt)
 		}
+		if s.catalog != nil && z.Type == "primary" {
+			z = z.withExtraTransfer(s.catalog.allowNets, s.catalog.notify)
+			members = append(members, z.Name)
+		}
 		zones[z.Name] = z
 	}
+	if s.catalog != nil {
+		before := s.serials[s.catalog.apex].Serial
+		cat := s.buildCatalogLocked(members)
+		zones[cat.Name] = cat
+		if cat.Serial != before {
+			s.catalogDirty = true
+		}
+	}
 	s.zones.Store(&zones)
+}
+
+// notifyCatalogChange fires OnLoad for the catalog zone when the last
+// rebuild bumped its serial (membership changed): the secondaries get
+// NOTIFY and reconcile. Call OUTSIDE the store lock.
+func (s *Store) notifyCatalogChange() {
+	s.mu.Lock()
+	dirty := s.catalogDirty
+	s.catalogDirty = false
+	var cat *Zone
+	if dirty && s.catalog != nil {
+		cat = (*s.zones.Load())[s.catalog.apex]
+	}
+	s.mu.Unlock()
+	if cat != nil && s.OnLoad != nil {
+		s.OnLoad(cat)
+	}
 }
 
 func sortedFilesLocked(files map[string]*fileEntry) []string {
@@ -277,12 +315,13 @@ func (s *Store) Count() int { return len(*s.zones.Load()) }
 
 // PrimaryZones returns the apexes (lowercase FQDN) of the loaded
 // primary zones, sorted. The ACME manager derives its certificate
-// candidates from this list.
+// candidates from this list; the synthetic catalog zone is not a
+// real domain and is excluded.
 func (s *Store) PrimaryZones() []string {
 	zones := *s.zones.Load()
 	out := make([]string, 0, len(zones))
 	for name, z := range zones {
-		if z.Type == "primary" && z.loaded {
+		if z.Type == "primary" && z.loaded && !z.synthetic {
 			out = append(out, name)
 		}
 	}

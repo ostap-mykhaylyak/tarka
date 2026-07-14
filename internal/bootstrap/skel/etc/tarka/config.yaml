@@ -28,6 +28,19 @@ zones:
   # loaded).
   dir: /etc/tarka/zones
 
+catalog:
+  # Catalog zones (RFC 9432): zero-config secondaries. On the PRIMARY,
+  # declare the slaves once in `secondaries`: they may transfer every
+  # zone (no per-zone transfer.allow needed), get NOTIFY for
+  # everything, and receive the catalog zone listing all hosted zones.
+  # On a SECONDARY, set `primaries` to the master(s): every zone in
+  # their catalog is provisioned automatically — no zone files at all.
+  # Entries are IP or IP:port; primary and secondaries must agree on
+  # the zone name.
+  zone: catalog.tarka.
+  secondaries: []            # primary side, e.g. [203.0.113.2]
+  primaries: []              # secondary side, e.g. [198.51.100.1]
+
 geoip:
   # MaxMind GeoLite2 country database, used by the geo: field of zone
   # records (GeoDNS). Install geoipupdate to keep it fresh; tarka
