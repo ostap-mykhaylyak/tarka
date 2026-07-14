@@ -19,9 +19,10 @@ answered with REFUSED.
 - Secondary mode: AXFR in from external primaries with SOA
   refresh/retry/expire timers; the transferred copy is persisted so a
   restart resumes from the last good zone
-- Catalog zones (RFC 9432): declare the slaves once on the primary
-  and they provision every hosted zone automatically — a secondary
-  needs zero zone files, and new zones propagate on the spot
+- Catalog zones (RFC 9432) with slave auto-discovery: the primary
+  derives its secondaries from the NS glue of the zones themselves —
+  no slave lists in the config, a secondary needs zero zone files,
+  and new zones propagate on the spot
 - GeoDNS: tag records with `geo: [IT, EU, ...]` (MaxMind
   GeoLite2-Country, hot-swapped) and clients get the nearest variant;
   EDNS Client Subnet is honored and echoed (RFC 7871)
@@ -122,22 +123,24 @@ catalog:
   primaries: [198.51.100.1]
 ```
 
-and on the **primary**, declare the slave once (also in
-`config.yaml` — this replaces the per-zone `transfer:` section of
-step 2, which becomes optional):
+That's it — **the primary needs nothing**: it discovers its slaves
+from the zones themselves. The glue IPs of the apex NS records
+(`ns2 A 203.0.113.2` in step 2) may transfer every zone and receive
+NOTIFY, automatically; the primary's own addresses never count, so
+two NS names pointing at the same server just mean "no secondaries".
+The primary also publishes a catalog zone (RFC 9432) listing every
+zone it hosts; the secondary subscribes to it and provisions each
+member automatically: add a zone file on the primary and the slave
+picks it up on the spot (NOTIFY-driven), delete it and the slave
+drops it.
+
+A slave that is NOT in the NS records (e.g. a hidden backup) can
+still be declared explicitly on the primary:
 
 ```yaml
 catalog:
-  secondaries: [203.0.113.2]
+  secondaries: [192.0.2.9]
 ```
-
-That's it (restart both after the config change). The primary
-publishes a catalog zone (RFC 9432) listing every zone it hosts; the
-secondary subscribes to it and provisions each member automatically:
-add a zone file on the primary and the slave picks it up on the spot
-(NOTIFY-driven), delete it and the slave drops it. Every hosted zone
-is transferable by the declared slaves with no per-zone
-`transfer.allow`.
 
 Alternatively, the manual per-zone way — a three-line file on the
 secondary — still works, and is the way to slave zones from a
@@ -182,11 +185,11 @@ Point the domain's NS records at ALL the nameservers (`ns1` and
 1. On **ns3**: install tarka, set `catalog.primaries:
    [198.51.100.1]` in its config — done, every zone arrives by
    itself.
-2. On the **primary**: add `192.0.2.3` to `catalog.secondaries`
-   (restart), and add the NS + glue records to the zones
+2. On the **primary**: just add the NS + glue records to the zones
    (`{name: "@", type: NS, value: ns3.example.com.}`,
-   `{name: ns3, type: A, value: 192.0.2.3}`) — hot-reloaded, serial
-   bumps, everyone gets NOTIFY.
+   `{name: ns3, type: A, value: 192.0.2.3}`) — hot-reloaded: the new
+   glue makes ns3 a discovered slave, serial bumps, everyone gets
+   NOTIFY.
 3. At the registrar: add the `ns3` NS/host record.
 
 The same works in reverse: a tarka instance can be the secondary of a

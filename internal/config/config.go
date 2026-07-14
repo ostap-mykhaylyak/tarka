@@ -95,9 +95,14 @@ type Catalog struct {
 	// Zone is the catalog zone name; primary and secondaries must
 	// agree on it. It is never part of the public DNS tree.
 	Zone string `yaml:"zone"`
-	// Secondaries (PRIMARY side) declares the slaves once: they may
-	// transfer the catalog and every hosted zone, and receive NOTIFY
-	// for all of them. Entries are IP or IP:port.
+	// AutoSecondaries derives the slaves from the zones themselves:
+	// the glue IPs of every apex NS record (minus this machine's own
+	// addresses) may transfer the zone and the catalog, and receive
+	// NOTIFY. Two NS names pointing at this same server simply yield
+	// no secondaries.
+	AutoSecondaries bool `yaml:"auto_secondaries"`
+	// Secondaries (PRIMARY side) declares extra slaves explicitly,
+	// merged with the auto-derived ones. Entries are IP or IP:port.
 	Secondaries []string `yaml:"secondaries"`
 	// Primaries (SECONDARY side) subscribes to the catalog of these
 	// masters and auto-provisions their zones. Entries are IP or
@@ -163,7 +168,8 @@ func Default() *Config {
 			Dir: paths.ZonesDir,
 		},
 		Catalog: Catalog{
-			Zone: "catalog.tarka.",
+			Zone:            "catalog.tarka.",
+			AutoSecondaries: true,
 		},
 		GeoIP: GeoIP{
 			Enabled:   false,
@@ -231,10 +237,10 @@ func (c *Config) validate() error {
 		return fmt.Errorf("geoip.country_db is required when geoip.enabled is true")
 	}
 
-	if len(c.Catalog.Secondaries) > 0 || len(c.Catalog.Primaries) > 0 {
-		if c.Catalog.Zone == "" {
-			return fmt.Errorf("catalog.zone is required when the catalog is in use")
-		}
+	if c.Catalog.Zone == "" && (c.Catalog.AutoSecondaries || len(c.Catalog.Secondaries) > 0 || len(c.Catalog.Primaries) > 0) {
+		return fmt.Errorf("catalog.zone is required when the catalog is in use")
+	}
+	if len(c.Catalog.Secondaries) > 0 {
 		// Secondaries must carry a usable IP (it doubles as the
 		// transfer ACL); invalid entries are skipped with a warning.
 		valid := c.Catalog.Secondaries[:0]

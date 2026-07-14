@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -149,12 +151,16 @@ func (s *Store) LoadFile(path string) {
 	}
 	entry.zone, entry.lastErr = z, ""
 	s.rebuildLocked()
+	// Hand the hook the SERVING zone (overlay and catalog transfer
+	// targets applied), so the NOTIFY fan-out reaches the catalog
+	// secondaries too — unless this file lost a duplicate conflict.
+	loaded := (*s.zones.Load())[z.Name]
 	s.mu.Unlock()
 
 	s.log.Info("zone loaded", "file", base, "zone", z.Name, "type", z.Type,
 		"serial", z.Serial, "records", z.Records())
-	if s.OnLoad != nil {
-		s.OnLoad(z)
+	if s.OnLoad != nil && loaded != nil && loaded.File == z.File {
+		s.OnLoad(loaded)
 	}
 	s.notifyCatalogChange()
 }
@@ -240,6 +246,7 @@ func (s *Store) setError(base, msg string) {
 func (s *Store) rebuildLocked() {
 	zones := map[string]*Zone{}
 	var members []string
+	derivedAll := map[netip.Addr]bool{} // union of auto-discovered slaves
 	for _, base := range sortedFilesLocked(s.files) {
 		entry := s.files[base]
 		if entry.zone == nil {
@@ -255,20 +262,43 @@ func (s *Store) rebuildLocked() {
 			z = z.WithOverlay(s.serials[z.Name].Serial, txt)
 		}
 		if s.catalog != nil && z.Type == "primary" {
-			z = z.withExtraTransfer(s.catalog.allowNets, s.catalog.notify)
+			nets := s.catalog.allowNets
+			notify := s.catalog.notify
+			for _, a := range s.catalog.derivedSecondaries(z) {
+				derivedAll[a] = true
+				nets = append(nets, netip.PrefixFrom(a, a.BitLen()))
+				notify = append(notify, net.JoinHostPort(a.String(), "53"))
+			}
+			if len(nets) > 0 || len(notify) > 0 {
+				z = z.withExtraTransfer(nets, notify)
+			}
 			members = append(members, z.Name)
 		}
 		zones[z.Name] = z
 	}
-	if s.catalog != nil {
+	// The catalog is worth publishing only when someone may fetch it.
+	if s.catalog != nil && (len(s.catalog.allowNets) > 0 || len(derivedAll) > 0) {
 		before := s.serials[s.catalog.apex].Serial
 		cat := s.buildCatalogLocked(members)
+		for a := range derivedAll {
+			cat.allowNets = append(cat.allowNets, netip.PrefixFrom(a, a.BitLen()))
+			cat.Transfer.Notify = appendUnique(cat.Transfer.Notify, net.JoinHostPort(a.String(), "53"))
+		}
 		zones[cat.Name] = cat
 		if cat.Serial != before {
 			s.catalogDirty = true
 		}
 	}
 	s.zones.Store(&zones)
+}
+
+func appendUnique(list []string, v string) []string {
+	for _, e := range list {
+		if e == v {
+			return list
+		}
+	}
+	return append(list, v)
 }
 
 // notifyCatalogChange fires OnLoad for the catalog zone when the last

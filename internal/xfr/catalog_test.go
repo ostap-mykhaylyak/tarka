@@ -44,7 +44,7 @@ func startCatalogPrimary(t *testing.T, zoneYAMLs map[string]string) (addr, zones
 			}
 		}
 		store = zone.NewStore(zonesDir, filepath.Join(dir, "serials.json"), discard())
-		store.SetCatalog("catalog.tarka.", []string{"127.0.0.1"})
+		store.SetCatalog("catalog.tarka.", []string{"127.0.0.1"}, false, nil)
 		store.LoadAll()
 
 		s := server.New(mgr, store, nil, metrics.New(), discard(), discard(), discard())

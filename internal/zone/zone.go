@@ -83,6 +83,39 @@ func (z *Zone) HasGeo() bool { return z.hasGeo }
 // SOARR returns a copy of the zone's SOA record.
 func (z *Zone) SOARR() dns.RR { return dns.Copy(z.soa) }
 
+// NSGlueAddrs returns the IPs of the in-zone glue (A/AAAA) of the
+// apex NS set: with catalog auto-discovery these are the zone's
+// secondaries.
+func (z *Zone) NSGlueAddrs() []netip.Addr {
+	var out []netip.Addr
+	seen := map[netip.Addr]bool{}
+	for _, rr := range raw(z.names[z.Name][dns.TypeNS]) {
+		ns, ok := rr.(*dns.NS)
+		if !ok {
+			continue
+		}
+		types, ok := z.names[strings.ToLower(ns.Ns)]
+		if !ok {
+			continue
+		}
+		for _, g := range append(raw(types[dns.TypeA]), raw(types[dns.TypeAAAA])...) {
+			var ip netip.Addr
+			var ok bool
+			switch a := g.(type) {
+			case *dns.A:
+				ip, ok = netip.AddrFromSlice(a.A)
+			case *dns.AAAA:
+				ip, ok = netip.AddrFromSlice(a.AAAA)
+			}
+			if ip = ip.Unmap(); ok && !seen[ip] {
+				seen[ip] = true
+				out = append(out, ip)
+			}
+		}
+	}
+	return out
+}
+
 // TransferAllowed reports whether addr may AXFR this zone. An empty
 // allow list refuses everyone.
 func (z *Zone) TransferAllowed(addr netip.Addr) bool {

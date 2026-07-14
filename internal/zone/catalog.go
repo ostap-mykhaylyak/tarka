@@ -25,16 +25,24 @@ import (
 // catalogSettings is the parsed primary-side configuration.
 type catalogSettings struct {
 	apex      string
-	allowNets []netip.Prefix
+	allowNets []netip.Prefix // explicit secondaries
 	notify    []string
+	auto      bool // derive secondaries from the zones' NS glue
+	self      map[netip.Addr]bool
 }
 
 // SetCatalog enables catalog publishing (primary side). Call before
-// LoadAll. Each secondary entry is IP or IP:port: the IP feeds the
-// merged transfer ACL, the whole entry (port 53 default) the NOTIFY
-// fan-out.
-func (s *Store) SetCatalog(zoneName string, secondaries []string) {
-	cat := &catalogSettings{apex: fqdn(zoneName)}
+// LoadAll. Each explicit secondary entry is IP or IP:port: the IP
+// feeds the merged transfer ACL, the whole entry (port 53 default)
+// the NOTIFY fan-out. With auto, the glue IPs of every apex NS
+// record are secondaries too — minus self (this machine's own
+// addresses): two NS names pointing at this same server derive no
+// secondaries at all.
+func (s *Store) SetCatalog(zoneName string, secondaries []string, auto bool, self []netip.Addr) {
+	cat := &catalogSettings{apex: fqdn(zoneName), auto: auto, self: map[netip.Addr]bool{}}
+	for _, a := range self {
+		cat.self[a.Unmap()] = true
+	}
 	for _, e := range secondaries {
 		host, target := e, e
 		if h, _, err := net.SplitHostPort(e); err == nil {
@@ -52,6 +60,21 @@ func (s *Store) SetCatalog(zoneName string, secondaries []string) {
 	s.catalog = cat
 	s.rebuildLocked()
 	s.mu.Unlock()
+}
+
+// derivedSecondaries returns the auto-discovered slave IPs of one
+// zone: the in-zone glue of the apex NS set, minus ourselves.
+func (cat *catalogSettings) derivedSecondaries(z *Zone) []netip.Addr {
+	if !cat.auto {
+		return nil
+	}
+	var out []netip.Addr
+	for _, a := range z.NSGlueAddrs() {
+		if !cat.self[a] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // CatalogZone returns the apex of the published catalog, if any.

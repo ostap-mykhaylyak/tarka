@@ -10,6 +10,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -130,10 +132,12 @@ func runDaemon(cfgPath string) (err error) {
 	xfrMgr := xfr.NewManager(zones, m, logs.Xfr, paths.SecondaryDir, stop)
 	zones.OnLoad = xfrMgr.ZoneLoaded
 	zones.OnRemove = xfrMgr.ZoneRemoved
-	// Catalog zones (RFC 9432): publish ours to the declared slaves
-	// and/or subscribe to a master's, auto-provisioning its zones.
-	if cat := mgr.Get().Catalog; len(cat.Secondaries) > 0 {
-		zones.SetCatalog(cat.Zone, cat.Secondaries)
+	// Catalog zones (RFC 9432): publish ours to the slaves — declared
+	// and/or auto-derived from the NS glue of each zone (this
+	// machine's own addresses never count as slaves) — and/or
+	// subscribe to a master's catalog, auto-provisioning its zones.
+	if cat := mgr.Get().Catalog; cat.AutoSecondaries || len(cat.Secondaries) > 0 {
+		zones.SetCatalog(cat.Zone, cat.Secondaries, cat.AutoSecondaries, localAddrs())
 	}
 	zones.LoadAll()
 	if cat := mgr.Get().Catalog; len(cat.Primaries) > 0 {
@@ -209,6 +213,24 @@ func runDaemon(cfgPath string) (err error) {
 		return nil
 	}
 	return nil
+}
+
+// localAddrs collects this machine's own IPs: with catalog
+// auto-discovery, an NS glue pointing at ourselves is not a slave.
+func localAddrs() []netip.Addr {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+				out = append(out, ip.Unmap())
+			}
+		}
+	}
+	return out
 }
 
 func fatalIf(err error) {

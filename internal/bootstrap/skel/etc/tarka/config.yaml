@@ -29,16 +29,19 @@ zones:
   dir: /etc/tarka/zones
 
 catalog:
-  # Catalog zones (RFC 9432): zero-config secondaries. On the PRIMARY,
-  # declare the slaves once in `secondaries`: they may transfer every
-  # zone (no per-zone transfer.allow needed), get NOTIFY for
-  # everything, and receive the catalog zone listing all hosted zones.
-  # On a SECONDARY, set `primaries` to the master(s): every zone in
-  # their catalog is provisioned automatically — no zone files at all.
-  # Entries are IP or IP:port; primary and secondaries must agree on
-  # the zone name.
+  # Catalog zones (RFC 9432): zero-config secondaries.
+  # PRIMARY side: with auto_secondaries the slaves are DISCOVERED from
+  # the zones themselves — the glue IPs of every apex NS record (minus
+  # this machine's own addresses) may transfer everything, get NOTIFY
+  # for everything and receive the catalog listing all hosted zones.
+  # Two NS names pointing at this same server simply yield no
+  # secondaries. `secondaries` adds extra slaves explicitly.
+  # SECONDARY side: set `primaries` to the master(s) — every zone in
+  # their catalog is provisioned automatically, no zone files at all.
+  # Entries are IP or IP:port; both sides must agree on the zone name.
   zone: catalog.tarka.
-  secondaries: []            # primary side, e.g. [203.0.113.2]
+  auto_secondaries: true
+  secondaries: []            # primary side, extra slaves, e.g. [203.0.113.2]
   primaries: []              # secondary side, e.g. [198.51.100.1]
 
 geoip:

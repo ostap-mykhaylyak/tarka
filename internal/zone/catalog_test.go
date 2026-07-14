@@ -14,7 +14,7 @@ func TestCatalogSynthesis(t *testing.T) {
 	writeZoneFile(t, dir, "example.org.yaml", strings.ReplaceAll(storeZone, "example.com", "example.org"))
 
 	s := newTestStore(t, dir)
-	s.SetCatalog("catalog.tarka.", []string{"203.0.113.2"})
+	s.SetCatalog("catalog.tarka.", []string{"203.0.113.2"}, false, nil)
 	s.LoadAll()
 
 	cat := s.Find("catalog.tarka.")
@@ -63,7 +63,7 @@ func TestCatalogSerialBumpsOnMembershipChange(t *testing.T) {
 	dir := t.TempDir()
 	writeZoneFile(t, dir, "example.com.yaml", storeZone)
 	s := newTestStore(t, dir)
-	s.SetCatalog("catalog.tarka.", []string{"203.0.113.2"})
+	s.SetCatalog("catalog.tarka.", []string{"203.0.113.2"}, false, nil)
 	s.LoadAll()
 	before := s.Find("catalog.tarka.").Serial
 
