@@ -50,10 +50,21 @@ func startServerListen(t *testing.T, zoneYAML, listen string) (udpAddr, tcpAddr 
 
 func startServerFull(t *testing.T, zoneYAML string, geo GeoResolver, listen string) (udpAddr, tcpAddr string, s *Server) {
 	t.Helper()
+	return startServerIdentity(t, zoneYAML, geo, listen, "")
+}
+
+// startServerIdentity bakes an NSID identity into the config (set
+// before Start, so the server is never mutated while it serves).
+func startServerIdentity(t *testing.T, zoneYAML string, geo GeoResolver, listen, identity string) (udpAddr, tcpAddr string, s *Server) {
+	t.Helper()
 	dir := t.TempDir()
 
+	cfgBody := "server:\n  listen: [\"" + listen + "\"]\n"
+	if identity != "" {
+		cfgBody += "  identity: \"" + identity + "\"\n"
+	}
 	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte("server:\n  listen: [\""+listen+"\"]\n"), 0o640); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	mgr, err := config.NewManager(cfgPath)

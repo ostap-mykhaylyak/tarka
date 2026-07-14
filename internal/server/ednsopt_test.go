@@ -38,8 +38,7 @@ func respEDE(m *dns.Msg) *dns.EDNS0_EDE {
 }
 
 func TestNSIDReportsIdentity(t *testing.T) {
-	udp, _, s := startServer(t, testZone)
-	s.identity = "ns1.example.com"
+	udp, _, _ := startServerIdentity(t, testZone, nil, "127.0.0.1:0", "ns1.example.com")
 
 	// Without an NSID request: no NSID in the response.
 	in := queryOpt(t, udp, "www.example.com.", dns.TypeA, nil)
