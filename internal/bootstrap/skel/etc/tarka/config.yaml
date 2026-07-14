@@ -27,6 +27,11 @@ server:
   # apart. Empty = the machine hostname.
   identity: ""
 
+  # One line per answered query to query.log (buffered). At very high
+  # QPS set false to drop per-query logging for maximum throughput;
+  # the --status counters still track the traffic. Hot-reloadable.
+  query_log: true
+
 zones:
   # Directory with one YAML file per zone (hot-reloaded; an invalid
   # file is skipped with a warning and its last good version stays

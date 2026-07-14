@@ -312,12 +312,13 @@ func (z *Zone) LookupGeo(qname string, qtype uint16, g ClientGeo) Result {
 // resolve fills res for qname/qtype, following in-zone CNAMEs.
 func (z *Zone) resolve(qname string, qtype uint16, g ClientGeo, depth int, res *Result) {
 	if types, ok := z.names[qname]; ok {
-		if cname := pick(types[dns.TypeCNAME], g); len(cname) > 0 && qtype != dns.TypeCNAME {
+		if cname := pick(nil, types[dns.TypeCNAME], g); len(cname) > 0 && qtype != dns.TypeCNAME {
 			z.followCNAME(cname[0].(*dns.CNAME), qtype, g, depth, res)
 			return
 		}
-		if rrs := pick(types[qtype], g); len(rrs) > 0 {
-			res.Answer = append(res.Answer, rrs...)
+		before := len(res.Answer)
+		res.Answer = pick(res.Answer, types[qtype], g) // hot path: appends in place
+		if len(res.Answer) > before {
 			return
 		}
 		res.Ns = append(res.Ns, z.negativeSOA())
@@ -333,11 +334,11 @@ func (z *Zone) resolve(qname string, qtype uint16, g ClientGeo, depth int, res *
 	// — the longest existing ancestor of qname — may match.
 	if ce := z.closestEncloser(qname); ce != "" {
 		if types, ok := z.names["*."+ce]; ok {
-			if cname := pick(types[dns.TypeCNAME], g); len(cname) > 0 && qtype != dns.TypeCNAME {
+			if cname := pick(nil, types[dns.TypeCNAME], g); len(cname) > 0 && qtype != dns.TypeCNAME {
 				z.followCNAME(synthesize(cname[0], qname).(*dns.CNAME), qtype, g, depth, res)
 				return
 			}
-			if rrs := pick(types[qtype], g); len(rrs) > 0 {
+			if rrs := pick(nil, types[qtype], g); len(rrs) > 0 {
 				for _, rr := range rrs {
 					res.Answer = append(res.Answer, synthesize(rr, qname))
 				}
@@ -356,21 +357,43 @@ func (z *Zone) resolve(qname string, qtype uint16, g ClientGeo, depth int, res *
 // with geo and/or view answers when the client matches ANY of its
 // tags (geo OR view); with no tagged match, the untagged defaults
 // answer. An all-tagged set with no match yields nothing (NODATA).
-func pick(entries []rrEntry, c ClientGeo) []dns.RR {
-	var matched, def []dns.RR
+//
+// Fast path (the overwhelmingly common case): when the RRset has no
+// tags at all, append the records straight into dst without building
+// the intermediate matched/default slices. Returns the extended dst.
+func pick(dst []dns.RR, entries []rrEntry, c ClientGeo) []dns.RR {
+	tagged := false
+	for i := range entries {
+		if len(entries[i].geo) != 0 || len(entries[i].view) != 0 {
+			tagged = true
+			break
+		}
+	}
+	if !tagged {
+		for i := range entries {
+			dst = append(dst, entries[i].rr)
+		}
+		return dst
+	}
+
+	// Slow path: at least one tagged entry — matched wins over defaults.
+	start := len(dst)
+	matched := 0
 	for _, e := range entries {
 		if len(e.geo) == 0 && len(e.view) == 0 {
-			def = append(def, e.rr)
+			dst = append(dst, e.rr) // provisional default
 			continue
 		}
 		if matchTags(e, c) {
-			matched = append(matched, e.rr)
+			// Move matched records to the front of this RRset's span.
+			dst = append(dst[:start+matched], append([]dns.RR{e.rr}, dst[start+matched:]...)...)
+			matched++
 		}
 	}
-	if len(matched) > 0 {
-		return matched
+	if matched > 0 {
+		return dst[:start+matched] // drop the provisional defaults
 	}
-	return def
+	return dst
 }
 
 // matchTags reports whether an entry's geo or view tags match the
@@ -479,14 +502,16 @@ func synthesize(rr dns.RR, qname string) dns.RR {
 
 // parentName strips the leftmost label; "" when there is no parent.
 func parentName(name string) string {
-	if name == "." {
+	if name == "." || name == "" {
 		return ""
 	}
-	idx := dns.Split(name)
-	if len(idx) < 2 {
+	// dns.NextLabel is allocation-free (unlike dns.Split, which builds
+	// a []int of every label offset) — this is on the query hot path.
+	i, end := dns.NextLabel(name, 0)
+	if end {
 		return "."
 	}
-	return name[idx[1]:]
+	return name[i:]
 }
 
 // fqdn lowercases and fully qualifies a name.

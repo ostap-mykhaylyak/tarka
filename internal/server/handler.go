@@ -140,6 +140,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(m)
 	done(int64(m.Len()), m.Rcode)
 
+	if !cfg.Server.QueryLog {
+		return
+	}
 	client := w.RemoteAddr().String()
 	if host, _, err := net.SplitHostPort(client); err == nil {
 		client = host

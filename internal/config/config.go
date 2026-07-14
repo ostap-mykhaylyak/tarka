@@ -162,6 +162,12 @@ type Server struct {
 	// asks for it — useful to tell apart anycast/multi-server setups
 	// ("which node answered?"). Empty means the machine hostname.
 	Identity string `yaml:"identity"`
+
+	// QueryLog writes one line per answered query to query.log. It is
+	// buffered, but at very high QPS even the buffered path costs; set
+	// false to drop per-query logging entirely for maximum throughput
+	// (counters in --status still track the traffic). Hot-reloadable.
+	QueryLog bool `yaml:"query_log"`
 }
 
 // Zones locates the per-zone YAML files.
@@ -245,6 +251,7 @@ func Default() *Config {
 			Listen:         []string{":53"},
 			UDPPayloadSize: 1232,
 			TCPTimeout:     Duration(10 * time.Second),
+			QueryLog:       true,
 		},
 		Zones: Zones{
 			Dir: paths.ZonesDir,

@@ -3,82 +3,132 @@
 // Observability is reading log files: no dashboard, no rotation logic
 // in the binary. Rotation is delegated to logrotate, which sends
 // SIGHUP; the daemon then calls Reopen on every stream.
+//
+// The high-volume query stream is buffered: at scale a write(2) per
+// query serialized on one mutex caps throughput and kills multi-core
+// scaling, so query lines accumulate in a buffer flushed in the
+// background (and on reopen/close). A hard crash may lose the last
+// unflushed query lines — an acceptable trade for an authoritative
+// server. The low-volume streams (service, xfr, acme) stay unbuffered
+// so a diagnostic line is on disk the instant it is written.
 package logging
 
 import (
+	"bufio"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/ostap-mykhaylyak/tarka/internal/paths"
 )
 
+// flushInterval bounds how long a buffered line waits before hitting
+// disk.
+const flushInterval = 250 * time.Millisecond
+
 // reopenFile is an *os.File that can be reopened in place (logrotate
-// hook). Writes are serialized with a mutex so a reopen never races a
-// log line.
+// hook), optionally buffered. Writes are serialized with a mutex so a
+// reopen never races a log line.
 type reopenFile struct {
 	mu   sync.Mutex
 	path string
 	f    *os.File
+	bw   *bufio.Writer // nil when unbuffered
 }
 
-func openFile(path string) (*reopenFile, error) {
+func openFile(path string, buffered bool) (*reopenFile, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, err
 	}
-	return &reopenFile{path: path, f: f}, nil
+	r := &reopenFile{path: path, f: f}
+	if buffered {
+		r.bw = bufio.NewWriterSize(f, 32*1024)
+	}
+	return r, nil
+}
+
+// writer returns the current write target under the lock.
+func (r *reopenFile) dst() io.Writer {
+	if r.bw != nil {
+		return r.bw
+	}
+	return r.f
 }
 
 func (r *reopenFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.f.Write(p)
+	return r.dst().Write(p)
+}
+
+// Flush drains the buffer to the file (no-op when unbuffered).
+func (r *reopenFile) Flush() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bw != nil {
+		return r.bw.Flush()
+	}
+	return nil
 }
 
 func (r *reopenFile) Reopen() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.bw != nil {
+		r.bw.Flush()
+	}
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return err
 	}
 	old := r.f
 	r.f = f
+	if r.bw != nil {
+		r.bw.Reset(f)
+	}
 	return old.Close()
 }
 
 func (r *reopenFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.bw != nil {
+		r.bw.Flush()
+	}
 	return r.f.Close()
 }
 
 // Streams holds one independent *slog.Logger per concern.
 type Streams struct {
 	Service *slog.Logger // daemon lifecycle, config/zone reloads, errors
-	Query   *slog.Logger // one line per DNS query answered
+	Query   *slog.Logger // one line per DNS query answered (buffered)
 	Xfr     *slog.Logger // zone transfers (in and out) and NOTIFY traffic
 	Acme    *slog.Logger // certificate issuance and renewal
 
 	files []*reopenFile
+	stop  chan struct{}
+	once  sync.Once
 }
 
 // Open opens all log streams under dir (production: paths.LogDir).
 func Open(dir string) (*Streams, error) {
-	s := &Streams{}
+	s := &Streams{stop: make(chan struct{})}
 	for _, def := range []struct {
-		name string
-		dst  **slog.Logger
+		name     string
+		dst      **slog.Logger
+		buffered bool
 	}{
-		{paths.ServiceLog, &s.Service},
-		{paths.QueryLog, &s.Query},
-		{paths.XfrLog, &s.Xfr},
-		{paths.AcmeLog, &s.Acme},
+		{paths.ServiceLog, &s.Service, false},
+		{paths.QueryLog, &s.Query, true},
+		{paths.XfrLog, &s.Xfr, false},
+		{paths.AcmeLog, &s.Acme, false},
 	} {
-		rf, err := openFile(filepath.Join(dir, def.name))
+		rf, err := openFile(filepath.Join(dir, def.name), def.buffered)
 		if err != nil {
 			s.Close()
 			return nil, err
@@ -86,7 +136,24 @@ func Open(dir string) (*Streams, error) {
 		s.files = append(s.files, rf)
 		*def.dst = slog.New(slog.NewJSONHandler(rf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
+	go s.flushLoop()
 	return s, nil
+}
+
+// flushLoop drains the buffered streams periodically until Close.
+func (s *Streams) flushLoop() {
+	t := time.NewTicker(flushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-t.C:
+			for _, f := range s.files {
+				f.Flush()
+			}
+		}
+	}
 }
 
 // Reopen reopens every log file. Called on SIGHUP (logrotate hook).
@@ -100,8 +167,9 @@ func (s *Streams) Reopen() error {
 	return errors.Join(errs...)
 }
 
-// Close closes every log file. Called on shutdown.
+// Close flushes and closes every log file. Called on shutdown.
 func (s *Streams) Close() error {
+	s.once.Do(func() { close(s.stop) })
 	var errs []error
 	for _, f := range s.files {
 		if err := f.Close(); err != nil {
